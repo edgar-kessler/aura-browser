@@ -163,7 +163,7 @@ pub fn apply(new_dir: &Path) -> bool {
          )\r\n\
          robocopy \"{new}\" \"{install}\" /E /IS /R:3 /W:1 >nul\r\n\
          start \"\" \"{exe}\"\r\n\
-         del \"%~f0\"\r\n",
+         (goto) 2>nul & del \"%~f0\"\r\n",
         pid = pid,
         new = new_dir.display(),
         install = install.display(),
@@ -174,11 +174,19 @@ pub fn apply(new_dir: &Path) -> bool {
     }
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    std::process::Command::new("cmd.exe")
-        .args(["/c", &script.to_string_lossy()])
-        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
-        .spawn()
+    // Der Browser haengt womoeglich in einem Job-Objekt (Launcher, Explorer-Job,
+    // Testrunner). Ohne Breakaway stirbt das Austauschskript zusammen mit uns,
+    // bevor es kopieren kann. Wenn der Job kein Breakaway erlaubt, faellt der
+    // zweite Versuch auf den normalen Start zurueck.
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let spawn = |flags: u32| {
+        std::process::Command::new("cmd.exe")
+            .args(["/c", &script.to_string_lossy()])
+            .creation_flags(flags)
+            .spawn()
+    };
+    spawn(CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB)
+        .or_else(|_| spawn(CREATE_NO_WINDOW))
         .is_ok()
 }
 
