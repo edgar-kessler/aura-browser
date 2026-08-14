@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 /// Wohin der Updater schaut. Wird beim Veröffentlichen einmal gesetzt.
-pub const REPO: &str = "edgarkessler/aura-browser";
+pub const REPO: &str = "edgar-kessler/aura-browser";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Debug, Default)]
