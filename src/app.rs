@@ -587,6 +587,11 @@ impl App {
 
     pub fn run(&mut self) -> Result<()> {
         unsafe {
+            // Windows applies the launcher's STARTUPINFO show command to the very
+            // first ShowWindow call, which can leave us minimised. The second call
+            // is ours, so state it explicitly.
+            let _ = ShowWindow(self.hwnd, SW_SHOWNORMAL);
+            let _ = SetForegroundWindow(self.hwnd);
             let _ = UpdateWindow(self.hwnd);
         }
         self.relayout();
@@ -1119,8 +1124,17 @@ impl App {
         let w = rc.right as f32 / self.scale;
         let h = rc.bottom as f32 / self.scale;
         let sw = self.sidebar_w;
+        // On the composition surface our visual sits *above* the WebView child
+        // window, so the content area has to stay untouched — otherwise the
+        // chrome paints straight over the page.
+        let overlay = self.comp.is_some();
+        let content_x = if self.fs_element { w } else { self.content_left };
         unsafe {
-            rt.Clear(Some(&theme.bg));
+            if overlay {
+                rt.Clear(None);
+            } else {
+                rt.Clear(Some(&theme.bg));
+            }
 
             // ---- topbar ----
             if let Ok(b) = brush(rt, theme.bg_top) {
@@ -1130,6 +1144,13 @@ impl App {
             // ---- sidebar ----
             if let Ok(b) = brush(rt, theme.sidebar_bg) {
                 rt.FillRectangle(&rect_f(0.0, 0.0, sw, h), &b);
+            }
+
+            // Gap between the sidebar and the page while the sidebar animates.
+            if overlay && content_x > sw {
+                if let Ok(b) = brush(rt, theme.bg) {
+                    rt.FillRectangle(&rect_f(sw, TOPBAR_H, content_x - sw, h - TOPBAR_H), &b);
+                }
             }
 
             // ---- separators ----
