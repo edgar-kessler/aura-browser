@@ -46,6 +46,18 @@ const ANIM_HOVER: f32 = 130.0;
 const ANIM_INDICATOR: f32 = 200.0;
 const ANIM_TAB: f32 = 165.0;
 
+/// Akzentfarbe und Dunkel-Flag der laufenden App — für Skripte, die in Seiten
+/// injiziert werden und zum Design passen sollen.
+pub fn theme_hint() -> (String, bool) {
+    let app = APP_PTR.with(|p| p.get());
+    if app.is_null() {
+        return ("110,91,208".to_string(), true);
+    }
+    let t = unsafe { &(*app).theme };
+    let (r, g, b) = t.accent;
+    (format!("{r},{g},{b}"), t.dark)
+}
+
 /// 12345 -> "12.345" (German grouping).
 fn fmt_thousands(n: u64) -> String {
     let s = n.to_string();

@@ -840,8 +840,29 @@ pub fn set_strict_popups(on: bool) {
     STRICT_POPUPS.with(|d| d.set(on));
 }
 
+/// Spuren, die Popunder-Netzwerke in der Ziel-URL hinterlassen. Der Zielserver
+/// selbst steht selten auf einer Liste – die Kampagnen-Parameter schon.
+const POPUNDER_MARKERS: &[&str] = &[
+    "popunder", "pop_under", "popundr", "clickadu", "popcash", "popads", "poptm",
+    "propellerads", "adcash", "hilltopads", "onclickalgo", "onclkds", "zeropark",
+    "trafficstars", "exoclick", "juicyads", "adsterra", "clickaine", "popmyads",
+    "utm_source=popunder", "utm_medium=popunder",
+];
+
 /// Would this URL be blocked as a top-level document (popup/popunder target)?
 pub fn is_blocked_popup(tab: u32, url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    // Kampagnen-Marker im Query-Teil: das ist nie ein Fenster, das jemand wollte.
+    if let Some(q) = lower.find(['?', '#']) {
+        let query = &lower[q..];
+        if POPUNDER_MARKERS.iter().any(|m| query.contains(m)) {
+            with_engine(|e| {
+                e.total += 1;
+                *e.tab_blocked.entry(tab).or_insert(0) += 1;
+            });
+            return true;
+        }
+    }
     should_block(tab, url, 1) // COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT
 }
 

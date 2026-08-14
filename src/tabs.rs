@@ -135,6 +135,52 @@ pub fn spawn_controller(env: &ICoreWebView2Environment, hwnd: HWND, tab_id: u32)
     }
 }
 
+/// Überschreibt Chromiums Fehlerseite mit einer eigenen. Das Skript prüft
+/// selbst, ob wirklich die eingebaute Seite steht — Seiten mit eigenem
+/// 404-Layout bleiben unangetastet.
+fn replace_error_page(wv: &ICoreWebView2, url: &str, status: i32, reason: i32) {
+    let path = crate::storage::assets_dir().join("errorpage.js");
+    let Ok(script) = std::fs::read_to_string(&path) else { return };
+    let (accent, dark) = crate::app::theme_hint();
+    let script = script
+        .replace("__ACCENT__", &accent)
+        .replace("__DARK__", if dark { "true" } else { "false" });
+    // Die Fehlerseite laeuft unter chromewebdata - die echte Adresse muss also
+    // von aussen kommen, sonst steht dort der interne Name.
+    let js = format!(
+        "window.__auraError={{status:{status},reason:'{}',url:{}}};\n{script}",
+        error_name(reason),
+        serde_json::to_string(url).unwrap_or_else(|_| "\"\"".into())
+    );
+    let w = wide(&js);
+    unsafe {
+        let _ = wv.ExecuteScript(PCWSTR(w.as_ptr()), None);
+    }
+}
+
+/// COREWEBVIEW2_WEB_ERROR_STATUS als Text, damit das Skript danach unterscheiden kann.
+fn error_name(status: i32) -> &'static str {
+    match status {
+        1 => "CertificateCommonNameIsIncorrect",
+        2 => "CertificateExpired",
+        3 => "ClientCertificateContainsErrors",
+        4 => "CertificateRevoked",
+        5 => "CertificateIsInvalid",
+        6 => "ServerUnreachable",
+        7 => "Timeout",
+        8 => "ErrorHttpInvalidServerResponse",
+        9 => "ConnectionAborted",
+        10 => "ConnectionReset",
+        11 => "Disconnected",
+        12 => "CannotConnect",
+        13 => "HostNameNotResolved",
+        14 => "OperationCanceled",
+        15 => "RedirectFailed",
+        16 => "UnexpectedError",
+        _ => "",
+    }
+}
+
 /// Maps the internal aura:// scheme to the local assets host and back.
 pub fn real_url(display: &str) -> String {
     if let Some(page) = display.strip_prefix("aura://") {
@@ -344,12 +390,33 @@ pub fn attach_events(
     guards.push(Box::new(h));
 
     // --- navigation completed ---
-    let h = NavigationCompletedEventHandler::create(Box::new(move |wv, _| {
+    let h = NavigationCompletedEventHandler::create(Box::new(move |wv, args| {
         if let Some(wv) = wv {
             let url = get_str(|p| unsafe { wv.Source(p) });
             let title = get_str(|p| unsafe { wv.DocumentTitle(p) });
             let can_back = get_bool(|b| unsafe { wv.CanGoBack(b) });
             let can_fwd = get_bool(|b| unsafe { wv.CanGoForward(b) });
+
+            // Chromiums Fehlerseite traegt „Microsoft Edge“ in der Fusszeile.
+            // Wenn die Navigation schieflief, ueberschreiben wir sie mit einer
+            // eigenen – aber nur, wenn wirklich die eingebaute Seite steht.
+            if let Some(args) = args {
+                let ok = get_bool(|b| unsafe { args.IsSuccess(b) });
+                let mut status = 0i32;
+                if let Ok(a2) = args.cast::<ICoreWebView2NavigationCompletedEventArgs2>() {
+                    unsafe {
+                        let _ = a2.HttpStatusCode(&mut status);
+                    }
+                }
+                let mut reason = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+                unsafe {
+                    let _ = args.WebErrorStatus(&mut reason);
+                }
+                if !ok || status >= 400 {
+                    replace_error_page(&wv, &url, status, reason.0);
+                }
+            }
+
             post(AppMsg::NavCompleted {
                 tab: tab_id,
                 url,
