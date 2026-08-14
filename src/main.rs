@@ -16,6 +16,12 @@ mod util;
 use app::App;
 
 fn main() {
+    // Kopfloser Update-Lauf: prueft, laedt, tauscht und beendet sich. Damit
+    // laesst sich das Update auch per Skript ausloesen und ueberhaupt testen.
+    if std::env::args().any(|a| a == "--self-update") {
+        std::process::exit(self_update());
+    }
+
     // DPI awareness before creating any window.
     unsafe {
         let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
@@ -39,4 +45,49 @@ fn main() {
             util::error_box(&format!("Aura Browser konnte nicht gestartet werden.\n\n{e}"));
         }
     }
+}
+
+/// Prueft und installiert ein Update ohne Oberflaeche. Rueckgabe ist der
+/// Exit-Code: 0 = eingespielt, 1 = nichts Neues, 2 = fehlgeschlagen. Der
+/// Verlauf landet zusaetzlich in %TEMP%\aura-update\update.log.
+fn self_update() -> i32 {
+    let log_path = std::env::temp_dir().join("aura-update").join("update.log");
+    let _ = std::fs::create_dir_all(log_path.parent().unwrap());
+    let mut log = String::new();
+    let mut note = |line: String| {
+        println!("{line}");
+        log.push_str(&line);
+        log.push('\n');
+    };
+
+    note(format!("installiert: {}", update::VERSION));
+    note(format!("quelle:      {}", update::REPO));
+
+    let code = match update::check() {
+        None => {
+            note("ergebnis:    kein neueres Release".into());
+            1
+        }
+        Some(rel) => {
+            note(format!("gefunden:    {} ({}, {} Bytes)", rel.version, rel.asset_name, rel.size));
+            match update::download(&rel) {
+                None => {
+                    note("ergebnis:    Download oder Entpacken fehlgeschlagen".into());
+                    2
+                }
+                Some(dir) => {
+                    note(format!("entpackt:    {}", dir.display()));
+                    if update::apply(&dir) {
+                        note("ergebnis:    Austausch angestossen, beende mich".into());
+                        0
+                    } else {
+                        note("ergebnis:    Austauschskript konnte nicht starten".into());
+                        2
+                    }
+                }
+            }
+        }
+    };
+    let _ = std::fs::write(&log_path, log);
+    code
 }
