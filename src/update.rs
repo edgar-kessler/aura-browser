@@ -144,8 +144,65 @@ fn run_hidden(program: &str, args: &[&str]) -> Option<()> {
     st.success().then_some(())
 }
 
+/// Tauscht beim Start die Dateien, wenn ein entpacktes Update bereitliegt, und
+/// startet den neuen Stand. Rückgabe `true` heißt: der Aufrufer soll sich sofort
+/// beenden, der Nachfolger läuft schon.
+///
+/// Bewusst ohne Hilfsprozess: ein gestartetes Skript stirbt mit uns, sobald der
+/// Browser in einem Job-Objekt läuft (Launcher, Testrunner). Windows erlaubt
+/// dagegen, die eigene laufende Programmdatei umzubenennen — genau das nutzen
+/// wir hier.
+pub fn finish_pending() -> bool {
+    let staged = work_dir().join("new");
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let Some(install) = exe.parent() else { return false };
+
+    if !staged.join("aura-browser.exe").is_file() {
+        // Reste eines früheren Updates aufräumen.
+        let _ = std::fs::remove_file(exe.with_extension("old.exe"));
+        return false;
+    }
+    // Nicht in den Staging-Ordner selbst kopieren.
+    if install == staged {
+        return false;
+    }
+
+    let old = exe.with_extension("old.exe");
+    let _ = std::fs::remove_file(&old);
+    if std::fs::rename(&exe, &old).is_err() {
+        return false;
+    }
+    if copy_tree(&staged, install).is_err() {
+        let _ = std::fs::rename(&old, &exe); // Rückzieher
+        return false;
+    }
+    let _ = std::fs::remove_dir_all(work_dir());
+
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = std::process::Command::new(&exe)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+    true
+}
+
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 /// Schreibt das Austauschskript, startet es und meldet zurück, ob es lief.
 /// Der Aufrufer beendet danach den Browser; das Skript wartet darauf.
+#[allow(dead_code)]
 pub fn apply(new_dir: &Path) -> bool {
     let Ok(exe) = std::env::current_exe() else { return false };
     let Some(install) = exe.parent() else { return false };
@@ -219,7 +276,8 @@ pub fn take_pending() -> Option<Release> {
 /// (WPARAM 1 = bereit zum Neustart, 0 = fehlgeschlagen).
 pub fn install_async(rel: Release, hwnd: isize, msg: u32) {
     std::thread::spawn(move || {
-        let ok = download(&rel).map(|dir| apply(&dir)).unwrap_or(false);
+        // Nur herunterladen und entpacken – eingespielt wird beim Neustart.
+        let ok = download(&rel).is_some();
         unsafe {
             let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
                 Some(windows::Win32::Foundation::HWND(hwnd as *mut core::ffi::c_void)),

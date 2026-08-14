@@ -16,8 +16,14 @@ mod util;
 use app::App;
 
 fn main() {
-    // Kopfloser Update-Lauf: prueft, laedt, tauscht und beendet sich. Damit
-    // laesst sich das Update auch per Skript ausloesen und ueberhaupt testen.
+    // Liegt ein fertig geladenes Update bereit? Dann jetzt tauschen, bevor
+    // irgendetwas anderes passiert - der Nachfolger uebernimmt.
+    if update::finish_pending() {
+        return;
+    }
+
+    // Kopfloser Update-Lauf: prueft, laedt, entpackt und beendet sich. Damit
+    // laesst sich das Update per Skript ausloesen und ueberhaupt testen.
     if std::env::args().any(|a| a == "--self-update") {
         std::process::exit(self_update());
     }
@@ -77,13 +83,8 @@ fn self_update() -> i32 {
                 }
                 Some(dir) => {
                     note(format!("entpackt:    {}", dir.display()));
-                    if update::apply(&dir) {
-                        note("ergebnis:    Austausch angestossen, beende mich".into());
-                        0
-                    } else {
-                        note("ergebnis:    Austauschskript konnte nicht starten".into());
-                        2
-                    }
+                    note("ergebnis:    bereit, wird beim naechsten Start eingespielt".into());
+                    0
                 }
             }
         }

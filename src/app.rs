@@ -1987,9 +1987,15 @@ impl App {
         crate::update::install_async(rel, self.hwnd.0 as isize, WM_UPDATE_READY);
     }
 
-    /// Closes the browser so the staged update can replace the files.
+    /// Starts the successor and closes this window; the fresh process finds the
+    /// staged update and swaps the files before it opens anything.
     pub fn restart_for_update(&mut self) {
         self.save_session();
+        if let Ok(exe) = std::env::current_exe() {
+            let mut cmd = std::process::Command::new(exe);
+            cmd.arg(format!("--profile={}", self.profile));
+            let _ = cmd.spawn();
+        }
         self.close_window();
     }
 
