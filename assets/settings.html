@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Einstellungen – Aura</title>
+<link rel="stylesheet" href="/aura.css">
+<style>
+.dots{display:flex;gap:10px}
+.dot{width:28px;height:28px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:transform .2s var(--ease),border-color .2s}
+.dot:hover{transform:scale(1.1)}
+.dot.sel{border-color:transparent;transform:scale(1.12);box-shadow:0 0 0 2px rgb(var(--bg)),0 0 0 4px rgb(var(--accent))}
+table.keys{width:100%;border-collapse:collapse;font-size:13px}
+table.keys td{padding:8px 4px;border-bottom:1px solid rgba(var(--line),.08)}
+table.keys tr:last-child td{border-bottom:none}
+table.keys td:last-child{text-align:right;color:rgb(var(--fg-dim))}
+.shield-hero{display:flex;align-items:center;gap:18px;padding:20px;border-radius:var(--r-lg);margin-bottom:12px;
+  background:linear-gradient(120deg,rgba(var(--accent),.16),rgba(var(--accent),.04));
+  border:1px solid rgba(var(--accent),.24)}
+.shield-hero svg{width:34px;height:34px;flex:none;stroke:rgb(var(--accent));fill:none;stroke-width:1.8}
+.shield-hero .big{font-size:26px;font-weight:600;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+.shield-hero .cap{font-size:12px;color:rgb(var(--fg-dim))}
+.chipline{display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 2px}
+.pill button{padding:0;border:none;background:none;color:rgb(var(--fg-dim));font-size:14px;line-height:1;cursor:pointer}
+.pill button:hover{color:rgb(var(--accent));transform:none}
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Einstellungen</h1>
+  <p class="lead">Aura Browser – nativ für Windows, ohne Electron.</p>
+
+  <h2>Aura Shield</h2>
+  <div class="shield-hero">
+    <svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.4-3 8.3-7 10-4-1.7-7-5.6-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+    <div>
+      <div class="big" id="sh_blocked">0</div>
+      <div class="cap">blockierte Anfragen insgesamt</div>
+    </div>
+  </div>
+  <div class="card pad">
+    <div class="row"><div class="lbl"><b>Werbung &amp; Tracker blockieren</b><small>Filtert Anfragen, bevor sie das Gerät verlassen</small></div>
+      <div class="sw" id="shield"></div></div>
+    <div class="row"><div class="lbl"><b>Filterlisten automatisch aktualisieren</b><small>Alle drei Tage im Hintergrund</small></div>
+      <div class="sw" id="shield_update"></div></div>
+    <div class="row"><div class="lbl"><b>Aktive Listen</b><small id="sh_rules">–</small></div>
+      <button id="sh_refresh">Jetzt aktualisieren</button></div>
+    <div class="row" id="sh_lists_row"><div class="lbl"><b>Geladen</b><div class="chipline" id="sh_lists"></div></div></div>
+    <div class="row" id="sh_allow_row" hidden><div class="lbl"><b>Ausnahmen</b><div class="chipline" id="sh_allow"></div></div></div>
+  </div>
+
+  <h2>Darstellung</h2>
+  <div class="card pad">
+    <div class="row"><div class="lbl"><b>Design</b><small>Hell, Dunkel oder dem System folgen</small></div>
+      <select id="theme"><option value="system">System</option><option value="light">Hell</option><option value="dark">Dunkel</option></select></div>
+    <div class="row"><div class="lbl"><b>Akzentfarbe</b><small>Für Markierungen und Highlights</small></div>
+      <div class="dots" id="accents"></div></div>
+    <div class="row"><div class="lbl"><b>Eigene Farbe</b><small>Beliebiger Farbton, wird sofort übernommen</small></div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <input type="color" id="accent_custom" value="#6e5bd0">
+        <input type="text" id="accent_hex" placeholder="#6e5bd0" style="width:110px">
+      </div></div>
+    <div class="row"><div class="lbl"><b>Glaseffekt</b><small id="glasshint">Durchscheinende Oberflächen (wirkt nach Neustart)</small></div>
+      <div class="sw" id="glass"></div></div>
+    <div class="row"><div class="lbl"><b>Glas-Stil</b><small>Acryl ist stärker verwaschen, Mica ruhiger</small></div>
+      <select id="glass_style">
+        <option value="acrylic">Acryl</option>
+        <option value="mica">Mica</option>
+        <option value="tabbed">Mica Alt</option>
+      </select></div>
+    <div class="row"><div class="lbl"><b>Animationen reduzieren</b><small>Weniger Bewegung, spart Ressourcen</small></div>
+      <div class="sw" id="reduce_motion"></div></div>
+  </div>
+
+  <h2>Suche</h2>
+  <div class="card pad">
+    <div class="row"><div class="lbl"><b>Suchmaschine</b><small>Für die Adressleiste</small></div>
+      <select id="search_engine">
+        <option value="google">Google</option><option value="bing">Bing</option>
+        <option value="duckduckgo">DuckDuckGo</option><option value="ecosia">Ecosia</option>
+        <option value="brave">Brave Search</option>
+      </select></div>
+    <div class="row"><div class="lbl"><b>Vorschläge in der Adressleiste</b><small>Lesezeichen, Tabs, Verlauf und Suche beim Tippen</small></div>
+      <div class="sw" id="suggestions"></div></div>
+  </div>
+
+  <h2>Start &amp; Tabs</h2>
+  <div class="card pad">
+    <div class="row"><div class="lbl"><b>Startseite</b><small>Ziel von Alt+Pos1</small></div>
+      <input type="text" id="homepage" style="width:260px" placeholder="aura://start"></div>
+    <div class="row"><div class="lbl"><b>Neuer Tab öffnet</b><small>Was beim Drücken von Strg+T erscheint</small></div>
+      <select id="new_tab_page">
+        <option value="start">Aura-Startseite</option>
+        <option value="home">Startseite</option>
+        <option value="blank">Leere Seite</option>
+      </select></div>
+    <div class="row"><div class="lbl"><b>Letzte Sitzung wiederherstellen</b><small>Offene Tabs beim Start erneut öffnen</small></div>
+      <div class="sw" id="restore_session"></div></div>
+    <div class="row"><div class="lbl"><b>Letzten Tab schließen beendet Aura</b><small>Sonst öffnet sich wieder ein neuer Tab</small></div>
+      <div class="sw" id="close_last_tab"></div></div>
+    <div class="row"><div class="lbl"><b>Seitenleiste bei Hover ausklappen</b><small>Zeigt Tab-Titel, ohne zu klicken</small></div>
+      <div class="sw" id="sidebar_hover"></div></div>
+  </div>
+
+  <h2>Verhalten</h2>
+  <div class="card pad">
+    <div class="row"><div class="lbl"><b>Schlafmodus für Tabs</b><small>Inaktive Tabs ruhen lassen (spart Arbeitsspeicher)</small></div>
+      <div class="sw" id="sleep_tabs"></div></div>
+    <div class="row"><div class="lbl"><b>Ruhen nach</b><small>Wartezeit, bevor ein Hintergrund-Tab schläft</small></div>
+      <select id="sleep_after_min">
+        <option value="5">5 Minuten</option><option value="15">15 Minuten</option>
+        <option value="30">30 Minuten</option><option value="60">1 Stunde</option>
+        <option value="180">3 Stunden</option>
+      </select></div>
+    <div class="row"><div class="lbl"><b>Standardzoom</b><small>Für neu geöffnete Seiten</small></div>
+      <select id="default_zoom">
+        <option value="80">80 %</option><option value="90">90 %</option>
+        <option value="100">100 %</option><option value="110">110 %</option>
+        <option value="125">125 %</option><option value="150">150 %</option>
+      </select></div>
+    <div class="row"><div class="lbl"><b>Pop-ups blockieren</b><small>Unerwünschte Fenster unterdrücken</small></div>
+      <div class="sw" id="block_popups"></div></div>
+    <div class="row"><div class="lbl"><b>Popunder streng blockieren</b>
+      <small>Nur Links dürfen Fenster öffnen. Hilft auf Streaming-Seiten, kann Zahlungs-Popups stören</small></div>
+      <div class="sw" id="popup_strict"></div></div>
+    <div class="row"><div class="lbl"><b>Downloads speichern in</b><small id="dlpath">Downloads\Aura</small></div>
+      <button id="pick_dl">Ordner wählen …</button></div>
+  </div>
+
+  <h2>Daten &amp; Datenschutz</h2>
+  <div class="card pad">
+    <div class="row"><div class="lbl"><b>Nur HTTPS</b><small>Unverschlüsselte Seiten werden automatisch auf HTTPS gehoben</small></div>
+      <div class="sw" id="https_only"></div></div>
+    <div class="row"><div class="lbl"><b>„Do Not Track“ senden</b><small>Setzt DNT- und Sec-GPC-Header bei jeder Anfrage</small></div>
+      <div class="sw" id="dnt"></div></div>
+    <div class="row" id="strict_row" hidden><div class="lbl"><b>Strenger Modus aktiv für</b>
+      <small>Keine Drittanbieter, keine Downloads, keine Berechtigungen</small>
+      <div class="chipline" id="strict_list"></div></div></div>
+    <div class="row"><div class="lbl"><b>Alle Cookies &amp; Website-Daten löschen</b><small>Betrifft alle Seiten in diesem Profil</small></div>
+      <button class="danger" id="clear_all_data">Alles löschen</button></div>
+    <div class="row"><div class="lbl"><b>Verlauf löschen</b><small>Alle gespeicherten Verlaufseinträge entfernen</small></div>
+      <button id="clear_history">Löschen</button></div>
+    <div class="row"><div class="lbl"><b>Gespeicherte Passwörter</b><small><span id="pwcount">0</span> Passwörter (lokal, DPAPI-verschlüsselt)</small></div>
+      <button id="goto_import">Importieren</button></div>
+    <div class="row"><div class="lbl"><b>Aus Chrome importieren</b><small>Lesezeichen, Verlauf, Passwörter, Autofill</small></div>
+      <button class="primary" id="goto_import2">Import starten</button></div>
+  </div>
+
+  <h2>Über Aura</h2>
+  <div class="card pad">
+    <div class="row"><div class="lbl"><b>Version</b><small id="verline">–</small></div>
+      <button id="upd_check">Nach Updates suchen</button></div>
+    <div class="row"><div class="lbl"><b>Automatisch nach Updates suchen</b><small>Einmal täglich beim Start, im Hintergrund</small></div>
+      <div class="sw" id="auto_update"></div></div>
+    <div class="row" id="upd_row" hidden><div class="lbl"><b id="upd_title">Update verfügbar</b>
+      <small id="upd_notes"></small></div>
+      <button class="primary" id="upd_go">Installieren</button></div>
+    <div class="row"><div class="lbl"><b>Quelltext</b><small id="repoline">–</small></div>
+      <button id="open_repo">Auf GitHub öffnen</button></div>
+  </div>
+
+  <h2>Tastaturkürzel</h2>
+  <div class="card pad">
+    <table class="keys">
+      <tr><td>Neuer Tab</td><td>Strg+T</td></tr>
+      <tr><td>Tab schließen</td><td>Strg+W</td></tr>
+      <tr><td>Adressleiste</td><td>Strg+L</td></tr>
+      <tr><td>Command Palette</td><td>Strg+K</td></tr>
+      <tr><td>Tab wiederherstellen</td><td>Strg+Umschalt+T</td></tr>
+      <tr><td>Verlauf / Downloads</td><td>Strg+H / Strg+J</td></tr>
+      <tr><td>Seite durchsuchen</td><td>Strg+F</td></tr>
+      <tr><td>Lesezeichen setzen</td><td>Strg+D</td></tr>
+      <tr><td>Zoom</td><td>Strg + / − / 0 · Strg+Mausrad</td></tr>
+      <tr><td>Vollbild</td><td>F11</td></tr>
+      <tr><td>DevTools</td><td>F12</td></tr>
+      <tr><td>Tab 1–8 / letzter Tab</td><td>Strg+1…8 / Strg+9</td></tr>
+      <tr><td>Tab wechseln</td><td>Strg+Tab · Strg+Bild↑/↓</td></tr>
+      <tr><td>Neu laden / hart neu laden</td><td>Strg+R / Strg+Umschalt+R</td></tr>
+      <tr><td>Laden stoppen</td><td>Esc</td></tr>
+      <tr><td>Zurück / Vor</td><td>Alt+← / Alt+→ · Maustasten 4/5</td></tr>
+      <tr><td>Startseite</td><td>Alt+Pos1</td></tr>
+      <tr><td>Tab duplizieren</td><td>Strg+Umschalt+D</td></tr>
+      <tr><td>Tab stummschalten</td><td>Strg+Umschalt+M</td></tr>
+      <tr><td>Tab anheften</td><td>Strg+Umschalt+A</td></tr>
+      <tr><td>Geteilte Ansicht</td><td>Strg+Umschalt+S</td></tr>
+      <tr><td>Weitersuchen</td><td>F3 / Strg+G</td></tr>
+      <tr><td>Quelltext anzeigen</td><td>Strg+U</td></tr>
+      <tr><td>Fenster schließen</td><td>Strg+Umschalt+W</td></tr>
+      <tr><td>Link im Hintergrund öffnen</td><td>Strg+Klick / Mittelklick</td></tr>
+      <tr><td>Tab schließen (Mittelklick)</td><td>Mittelklick auf Tab</td></tr>
+    </table>
+  </div>
+  <p class="note" id="profinfo"></p>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const post = m => window.chrome?.webview?.postMessage(m);
+const num = n => (n ?? 0).toLocaleString('de-DE');
+const mbOf = b => `${((b || 0) / 1048576).toFixed(1)} MB`;
+const ACCENTS = [
+  ["110,91,208", "Aura Violett"], ["154,122,224", "Flieder"], ["124,58,237", "Indigo"],
+  ["64,140,220", "Ozean"], ["14,165,233", "Himmel"], ["52,168,150", "Minze"],
+  ["34,197,94", "Wald"], ["208,156,60", "Amber"], ["249,115,22", "Sonne"],
+  ["208,91,152", "Rosé"], ["244,63,94", "Kirsche"], ["113,113,122", "Graphit"],
+];
+const toHex = rgb => '#' + rgb.split(',').map(n => (+n).toString(16).padStart(2, '0')).join('');
+const toRgb = hex => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return `${n >> 16 & 255},${n >> 8 & 255},${n & 255}`;
+};
+ACCENTS.forEach(([v, n]) => {
+  const d = document.createElement('div');
+  d.className = 'dot'; d.title = n; d.style.background = `rgb(${v})`; d.dataset.v = v;
+  d.addEventListener('click', () => post({cmd: 'save_setting', key: 'accent', value: v}));
+  $('#accents').appendChild(d);
+});
+function bindToggle(id) {
+  $(id).addEventListener('click', () => {
+    const on = !$(id).classList.contains('on');
+    $(id).classList.toggle('on', on);
+    post({cmd: 'save_setting', key: id.slice(1), value: on ? '1' : '0'});
+  });
+}
+['#reduce_motion', '#restore_session', '#sleep_tabs', '#block_popups', '#shield', '#shield_update',
+ '#suggestions', '#close_last_tab', '#sidebar_hover', '#dnt', '#https_only', '#popup_strict',
+ '#glass', '#auto_update'].forEach(bindToggle);
+$('#clear_all_data').addEventListener('click', e => { e.target.textContent = 'Gelöscht'; post({cmd: 'clear_all_data'}); });
+$('#upd_check').addEventListener('click', e => { e.target.textContent = 'Suche …'; post({cmd: 'update_check'}); });
+$('#open_repo').addEventListener('click', () => post({cmd: 'open_new', url: `https://github.com/${REPO}`}));
+let REPO = '';
+const bindSelect = id =>
+  $(id).addEventListener('change', e => post({cmd: 'save_setting', key: id.slice(1), value: e.target.value}));
+['#theme', '#search_engine', '#new_tab_page', '#sleep_after_min', '#default_zoom', '#glass_style'].forEach(bindSelect);
+$('#homepage').addEventListener('change', e => {
+  const v = e.target.value.trim() || 'aura://start';
+  e.target.value = v;
+  post({cmd: 'save_setting', key: 'homepage', value: v});
+});
+$('#pick_dl').addEventListener('click', () => post({cmd: 'pick_download_dir'}));
+$('#accent_custom').addEventListener('input', e => {
+  const rgb = toRgb(e.target.value);
+  if (rgb) {
+    $('#accent_hex').value = e.target.value;
+    document.documentElement.style.setProperty('--accent', rgb);
+    post({cmd: 'save_setting', key: 'accent', value: rgb});
+  }
+});
+$('#accent_hex').addEventListener('change', e => {
+  const rgb = toRgb(e.target.value);
+  if (rgb) {
+    $('#accent_custom').value = toHex(rgb);
+    post({cmd: 'save_setting', key: 'accent', value: rgb});
+  } else {
+    e.target.value = $('#accent_custom').value;
+  }
+});
+$('#clear_history').addEventListener('click', () => post({cmd: 'clear_history'}));
+$('#goto_import').addEventListener('click', () => post({cmd: 'open', url: 'aura://import'}));
+$('#goto_import2').addEventListener('click', () => post({cmd: 'open', url: 'aura://import'}));
+$('#sh_refresh').addEventListener('click', e => { e.target.textContent = 'Wird geladen …'; post({cmd: 'shield_update'}); });
+
+window.chrome?.webview?.addEventListener('message', ev => {
+  const m = ev.data;
+  if (m.type !== 'init') return;
+  const t = m.theme, d = m.data;
+  document.body.classList.toggle('dark', !!t.dark);
+  document.body.classList.toggle('reduce', !!t.reduce);
+  document.documentElement.style.setProperty('--accent', t.accent);
+  $('#theme').value = d.theme;
+  $('#search_engine').value = d.search_engine;
+  $('#new_tab_page').value = d.new_tab_page || 'start';
+  $('#sleep_after_min').value = d.sleep_after_min || '15';
+  $('#default_zoom').value = d.default_zoom || '100';
+  $('#homepage').value = d.homepage || 'aura://start';
+  $('#dlpath').textContent = d.download_dir || 'Downloads\\Aura (Standard)';
+  [['#reduce_motion', d.reduce_motion], ['#restore_session', d.restore_session], ['#sleep_tabs', d.sleep_tabs],
+   ['#block_popups', d.block_popups], ['#shield', d.shield], ['#shield_update', d.shield_update],
+   ['#suggestions', d.suggestions], ['#close_last_tab', d.close_last_tab],
+   ['#sidebar_hover', d.sidebar_hover], ['#dnt', d.dnt], ['#https_only', d.https_only],
+   ['#popup_strict', d.popup_strict], ['#glass', d.glass]]
+    .forEach(([id, v]) => $(id).classList.toggle('on', v === '1'));
+  $('#glass_style').value = d.glass_style || 'acrylic';
+  if (d.transparency !== '1') {
+    $('#glasshint').textContent =
+      'Windows-Transparenzeffekte sind aus — ohne sie zeichnet Windows kein Glas. '
+      + 'Einstellungen → Personalisierung → Farben → Transparenzeffekte';
+  }
+  const strict = d.shield_strict || [];
+  $('#strict_row').hidden = strict.length === 0;
+  $('#strict_list').innerHTML = '';
+  strict.forEach(site => {
+    const p = document.createElement('span');
+    p.className = 'pill';
+    p.textContent = site;
+    $('#strict_list').appendChild(p);
+  });
+  document.querySelectorAll('.dot').forEach(x => x.classList.toggle('sel', x.dataset.v === d.accent));
+  $('#accent_custom').value = toHex(d.accent || '110,91,208');
+  $('#accent_hex').value = $('#accent_custom').value;
+  $('#pwcount').textContent = d.passwords ?? 0;
+
+  $('#sh_blocked').textContent = num(d.shield_blocked);
+  $('#sh_rules').textContent = `${num(d.shield_rules)} Netzwerkregeln · ${num(d.shield_cosmetic)} Kosmetikregeln`;
+  $('#sh_refresh').textContent = 'Jetzt aktualisieren';
+  const lists = d.shield_lists || [];
+  $('#sh_lists').innerHTML = '';
+  lists.forEach(l => {
+    const p = document.createElement('span');
+    p.className = 'pill';
+    p.innerHTML = `${l.name} <b>${num(l.rules)}</b>`;
+    $('#sh_lists').appendChild(p);
+  });
+  const allow = d.shield_allow || [];
+  $('#sh_allow_row').hidden = allow.length === 0;
+  $('#sh_allow').innerHTML = '';
+  allow.forEach(site => {
+    const p = document.createElement('span');
+    p.className = 'pill';
+    p.textContent = site;
+    const b = document.createElement('button');
+    b.textContent = '✕';
+    b.title = 'Shield hier wieder aktivieren';
+    b.addEventListener('click', () => post({cmd: 'shield_unallow', site}));
+    p.appendChild(b);
+    $('#sh_allow').appendChild(p);
+  });
+
+  // --- Updates ---
+  REPO = d.repo || '';
+  $('#verline').textContent = `Aura Browser ${d.version} · WebView2-Engine`;
+  $('#repoline').textContent = REPO ? `github.com/${REPO}` : 'noch nicht veröffentlicht';
+  $('#auto_update').classList.toggle('on', d.auto_update === '1');
+  const st = d.update_state, up = d.update;
+  const btn = $('#upd_check');
+  btn.textContent = st === 'checking' ? 'Suche …' : 'Nach Updates suchen';
+  $('#upd_row').hidden = !up;
+  if (up) {
+    $('#upd_title').textContent = `Version ${up.version} verfügbar`;
+    $('#upd_notes').textContent = up.notes ? up.notes.split('\n')[0] : `${up.name} · ${mbOf(up.size)}`;
+    const go = $('#upd_go');
+    if (st === 'downloading') { go.textContent = 'Wird geladen …'; go.disabled = true; }
+    else if (st === 'ready') { go.textContent = 'Neu starten'; go.disabled = false; }
+    else if (st === 'failed') { go.textContent = 'Erneut versuchen'; go.disabled = false; }
+    else { go.textContent = 'Installieren'; go.disabled = false; }
+    go.onclick = () => post({cmd: st === 'ready' ? 'update_restart' : 'update_install'});
+  } else if (st === 'checking') {
+    $('#verline').textContent = `Aura Browser ${d.version} · suche nach Updates …`;
+  }
+
+  $('#profinfo').textContent = `Profil: ${t.profile}${t.private ? ' (privat)' : ''} · Aura ${d.version} · WebView2`;
+});
+</script>
+</body>
+</html>

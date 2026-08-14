@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Aus Chrome importieren – Aura</title>
+<link rel="stylesheet" href="/aura.css">
+<style>
+.page{max-width:660px}
+.result{white-space:pre-wrap;font-size:13px;line-height:1.7;padding:16px 18px;border-radius:var(--r-lg);
+  background:rgba(var(--accent),.09);border:1px solid rgba(var(--accent),.22);margin-top:20px;display:none}
+.path{font-size:12px;color:rgb(var(--fg-dim));margin-top:6px;word-break:break-all}
+.actions{display:flex;gap:10px;align-items:center;margin-top:20px}
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Aus Chrome importieren</h1>
+  <p class="lead">Aura liest direkt aus deinem Chrome-Profil – nur das, was du auswählst. Chrome sollte dabei geschlossen sein.</p>
+  <div class="actions" style="margin:0 0 18px">
+    <button class="primary" id="all">Alles importieren</button>
+    <span class="note" style="margin:0">Lesezeichen + Verlauf aus dem gewählten Profil, in einem Klick.</span>
+  </div>
+  <div class="card pad">
+    <div class="row" id="profilerow">
+      <div class="lbl"><b>Chrome-Profil</b><small>Aus welchem Profil gelesen wird</small></div>
+      <select id="profile"></select>
+    </div>
+    <div class="row">
+      <div class="lbl"><b>Lesezeichen</b><small>Inklusive Ordnerstruktur aus der Lesezeichenleiste</small></div>
+      <div class="sw on" id="cb_bm"></div>
+    </div>
+    <div class="row">
+      <div class="lbl"><b>Verlauf</b><small>Besuchte Seiten mit Besuchszähler (max. 5000 Einträge)</small></div>
+      <div class="sw on" id="cb_hi"></div>
+    </div>
+    <div class="row">
+      <div class="lbl"><b>Passwörter</b>
+        <small>Seit Chrome 127 sind Passwörter app-gebunden verschlüsselt und lassen sich nicht direkt lesen.
+        Exportiere sie in Chrome (Einstellungen → Passwörter → Exportieren) als CSV und wähle die Datei hier.</small>
+        <button id="pick" style="margin-top:10px">CSV-Datei auswählen …</button>
+        <div class="path" id="csvpath"></div>
+      </div>
+      <div class="sw" id="cb_pw"></div>
+    </div>
+  </div>
+  <div class="actions">
+    <button class="primary" id="go">Import starten</button>
+    <span class="note" style="margin:0">Läuft lokal, nichts wird hochgeladen.</span>
+  </div>
+  <div class="result" id="result"></div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const post = m => window.chrome?.webview?.postMessage(m);
+let csv = null;
+['#cb_bm', '#cb_hi', '#cb_pw'].forEach(id => $(id).addEventListener('click', () => $(id).classList.toggle('on')));
+$('#pick').addEventListener('click', () => post({cmd: 'pick_csv'}));
+function runImport(opts) {
+  $('#result').style.display = 'block';
+  $('#result').textContent = 'Importiere …';
+  post({cmd: 'import', profile: $('#profile').value || 'Default', csv, ...opts});
+}
+$('#go').addEventListener('click', () => runImport({
+  bookmarks: $('#cb_bm').classList.contains('on'),
+  history: $('#cb_hi').classList.contains('on'),
+  passwords: $('#cb_pw').classList.contains('on'),
+}));
+$('#all').addEventListener('click', () => {
+  $('#cb_bm').classList.add('on');
+  $('#cb_hi').classList.add('on');
+  runImport({bookmarks: true, history: true, passwords: !!csv});
+});
+window.chrome?.webview?.addEventListener('message', ev => {
+  const m = ev.data;
+  if (m.type === 'init') {
+    document.body.classList.toggle('dark', !!m.theme.dark);
+    document.body.classList.toggle('reduce', !!m.theme.reduce);
+    document.documentElement.style.setProperty('--accent', m.theme.accent);
+    const profiles = (m.data && m.data.profiles) || [];
+    const sel = $('#profile');
+    sel.innerHTML = '';
+    for (const p of profiles) {
+      const o = document.createElement('option');
+      o.value = p.dir;
+      o.textContent = p.label === p.dir ? p.dir : `${p.label} (${p.dir})`;
+      sel.appendChild(o);
+    }
+    if (!profiles.length) {
+      $('#profilerow').hidden = true;
+      $('#all').disabled = true;
+      $('#result').style.display = 'block';
+      $('#result').textContent = 'Kein Chrome-Profil gefunden.';
+    }
+  }
+  if (m.type === 'csv_picked') {
+    csv = m.path;
+    $('#csvpath').textContent = m.path;
+    $('#cb_pw').classList.add('on');
+  }
+  if (m.type === 'import_result') {
+    $('#result').style.display = 'block';
+    $('#result').textContent = m.text;
+  }
+});
+</script>
+</body>
+</html>

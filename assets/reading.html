@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Leseliste – Aura</title>
+<link rel="stylesheet" href="/aura.css">
+<style>
+.tabs{display:flex;gap:8px;margin-bottom:20px}
+.item.done .t b{text-decoration:line-through;opacity:.55}
+.item .mark{flex:none;width:26px;height:26px;padding:0;border-radius:var(--r-sm);border:1px solid rgba(var(--line),.22);
+  background:transparent;color:rgb(var(--fg-dim));font-size:12px;line-height:1;cursor:pointer;display:grid;place-items:center}
+.item .mark:hover{border-color:rgba(var(--accent),.6);color:rgb(var(--accent));transform:none}
+.item.done .mark{background:rgba(var(--success),.16);border-color:transparent;color:rgb(var(--success))}
+.age{font-size:11px;color:rgb(var(--fg-dim));font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="head"><h1>Leseliste</h1><span class="spacer"></span><span class="badge" id="count">0</span></div>
+  <p class="lead">Seiten für später – mit <b>Strg+Umschalt+L</b> hinzufügen.</p>
+  <div class="tabs" id="filters"></div>
+  <div id="list" class="fade"></div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const post = m => window.chrome?.webview?.postMessage(m);
+const host = u => (u || '').replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+let ITEMS = [], FILTER = 'open';
+
+const FILTERS = [['Offen', 'open'], ['Gelesen', 'done'], ['Alle', 'all']];
+FILTERS.forEach(([label, key]) => {
+  const b = document.createElement('button');
+  b.className = 'chip' + (key === FILTER ? ' sel' : '');
+  b.textContent = label;
+  b.addEventListener('click', () => {
+    FILTER = key;
+    document.querySelectorAll('#filters .chip').forEach((c, i) => c.classList.toggle('sel', FILTERS[i][1] === FILTER));
+    render();
+  });
+  $('#filters').appendChild(b);
+});
+
+function age(ts) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+  if (s < 3600) return `vor ${Math.floor(s / 60)} Min`;
+  if (s < 86400) return `vor ${Math.floor(s / 3600)} Std`;
+  const d = Math.floor(s / 86400);
+  return d < 30 ? `vor ${d} Tg` : new Date(ts * 1000).toLocaleDateString('de-DE');
+}
+
+function render() {
+  const list = $('#list');
+  list.innerHTML = '';
+  const shown = ITEMS.filter(e => FILTER === 'all' || (FILTER === 'done' ? e.read : !e.read));
+  $('#count').textContent = ITEMS.filter(e => !e.read).length;
+  if (!shown.length) {
+    list.innerHTML = '<div class="empty">Nichts hier.<br>Seiten landen über das Menü oder <b>Strg+Umschalt+L</b> in der Leseliste.</div>';
+    return;
+  }
+  for (const e of shown) {
+    const h = host(e.url);
+    const d = document.createElement('div');
+    d.className = 'item' + (e.read ? ' done' : '');
+    d.innerHTML = `<button class="mark" title="${e.read ? 'Als ungelesen markieren' : 'Als gelesen markieren'}">${e.read ? '✓' : ''}</button>`
+      + (e.favicon ? `<img class="ico" src="${e.favicon}" alt="">` : `<div class="ph">${(h[0] || 'A').toUpperCase()}</div>`)
+      + `<div class="t"><b></b><small></small></div><span class="age">${age(e.added)}</span>`
+      + `<button class="x" title="Entfernen">✕</button>`;
+    d.querySelector('b').textContent = e.title || h;
+    d.querySelector('small').textContent = h;
+    d.title = e.url;
+    d.querySelector('.mark').addEventListener('click', ev => {
+      ev.stopPropagation();
+      e.read = !e.read;
+      post({cmd: 'reading_read', url: e.url, read: e.read});
+      render();
+    });
+    d.querySelector('.x').addEventListener('click', ev => {
+      ev.stopPropagation();
+      post({cmd: 'reading_remove', url: e.url});
+      ITEMS = ITEMS.filter(x => x.url !== e.url);
+      render();
+    });
+    d.addEventListener('click', ev => {
+      if (ev.target.closest('button')) return;
+      post({cmd: ev.ctrlKey ? 'open_new' : 'open', url: e.url});
+    });
+    list.appendChild(d);
+  }
+}
+
+window.chrome?.webview?.addEventListener('message', ev => {
+  const m = ev.data;
+  if (m.type !== 'init') return;
+  document.body.classList.toggle('dark', !!m.theme.dark);
+  document.body.classList.toggle('reduce', !!m.theme.reduce);
+  document.documentElement.style.setProperty('--accent', m.theme.accent);
+  ITEMS = (m.data || {}).items || [];
+  render();
+});
+</script>
+</body>
+</html>

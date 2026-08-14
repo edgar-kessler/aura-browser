@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Task-Manager – Aura</title>
+<link rel="stylesheet" href="/aura.css">
+<style>
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px}
+.stat{padding:16px 18px;border-radius:var(--r-lg);background:rgba(var(--card),var(--card-a));
+  border:1px solid rgba(var(--line),var(--line-a))}
+.stat .k{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:rgb(var(--fg-dim))}
+.stat .v{margin-top:6px;font-size:24px;font-weight:600;font-variant-numeric:tabular-nums}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1.1px;color:rgb(var(--fg-dim));
+  font-weight:600;padding:8px 10px;border-bottom:1px solid rgba(var(--line),var(--line-a))}
+td{padding:9px 10px;border-bottom:1px solid rgba(var(--line),.07);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tbody tr{transition:background .2s var(--ease)}
+tbody tr:hover{background:rgba(var(--card),var(--card-a))}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.pill-row{display:flex;align-items:center;gap:9px;min-width:0}
+.pill-row img,.pill-row .ph{width:18px;height:18px;border-radius:5px;flex:none}
+.pill-row .ph{display:grid;place-items:center;font-size:10px;font-weight:700;
+  color:rgb(var(--accent));background:rgba(var(--accent),.16)}
+.pill-row span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;
+  background:rgba(var(--line),.12);color:rgb(var(--fg-dim))}
+.tag.on{background:rgba(var(--accent),.16);color:rgb(var(--accent))}
+.tag.sleep{background:rgba(var(--line),.10)}
+.rowbtn{padding:5px 10px;font-size:12px}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="head"><h1>Task-Manager</h1><span class="spacer"></span>
+    <button id="refresh">Aktualisieren</button></div>
+  <p class="lead">Was Aura gerade an Arbeitsspeicher belegt — pro Tab und pro Engine-Prozess.</p>
+
+  <div class="stats" id="stats"></div>
+
+  <h2>Tabs</h2>
+  <div class="card"><table id="tabs"><thead><tr>
+    <th>Tab</th><th>Status</th><th class="num">Blockiert</th><th></th>
+  </tr></thead><tbody></tbody></table></div>
+
+  <h2>Prozesse</h2>
+  <div class="card"><table id="procs"><thead><tr>
+    <th>Prozess</th><th class="num">PID</th><th class="num">Arbeitsspeicher</th>
+  </tr></thead><tbody></tbody></table></div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const post = m => window.chrome?.webview?.postMessage(m);
+const host = u => (u || '').replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+const num = n => (n ?? 0).toLocaleString('de-DE');
+const mb = v => `${(v ?? 0).toLocaleString('de-DE', {minimumFractionDigits: 1, maximumFractionDigits: 1})} MB`;
+
+$('#refresh').addEventListener('click', () => post({cmd: 'tasks_refresh'}));
+let timer = setInterval(() => post({cmd: 'tasks_refresh'}), 3000);
+addEventListener('pagehide', () => clearInterval(timer));
+
+function stat(k, v) {
+  return `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+}
+
+window.chrome?.webview?.addEventListener('message', ev => {
+  const m = ev.data;
+  if (m.type !== 'init') return;
+  document.body.classList.toggle('dark', !!m.theme.dark);
+  document.body.classList.toggle('reduce', !!m.theme.reduce);
+  document.documentElement.style.setProperty('--accent', m.theme.accent);
+  const d = m.data || {}, tabs = d.tabs || [], procs = d.procs || [];
+
+  const loaded = tabs.filter(t => t.loaded && !t.asleep).length;
+  const blocked = tabs.reduce((a, t) => a + (t.blocked || 0), 0);
+  $('#stats').innerHTML =
+    stat('Speicher gesamt', mb(d.total_mb)) +
+    stat('Tabs', `${num(tabs.length)}`) +
+    stat('davon geladen', `${num(loaded)}`) +
+    stat('Prozesse', `${num(procs.length)}`) +
+    stat('Blockiert (Sitzung)', num(blocked));
+
+  const tb = $('#tabs tbody');
+  tb.innerHTML = '';
+  tabs.forEach(t => {
+    const h = host(t.url) || 'aura';
+    const tr = document.createElement('tr');
+    const state = t.active ? '<span class="tag on">aktiv</span>'
+      : t.asleep ? '<span class="tag sleep">schläft</span>'
+      : t.loaded ? '<span class="tag">geladen</span>'
+      : '<span class="tag">nicht geladen</span>';
+    tr.innerHTML = `<td><div class="pill-row">`
+      + (t.favicon ? `<img src="${t.favicon}" alt="">` : `<div class="ph">${(h[0] || 'A').toUpperCase()}</div>`)
+      + `<span></span></div></td>`
+      + `<td>${state}${t.audio ? ' <span class="tag on">Ton</span>' : ''}${t.pinned ? ' <span class="tag">fix</span>' : ''}</td>`
+      + `<td class="num">${num(t.blocked)}</td>`
+      + `<td class="num"><button class="rowbtn" data-a="go">Anzeigen</button> `
+      + `<button class="rowbtn danger" data-a="close">Beenden</button></td>`;
+    tr.querySelector('span').textContent = t.title || h;
+    tr.title = t.url;
+    tr.querySelector('[data-a=go]').addEventListener('click', () => post({cmd: 'tab_activate', index: t.index}));
+    tr.querySelector('[data-a=close]').addEventListener('click', () => post({cmd: 'tab_close', index: t.index}));
+    tb.appendChild(tr);
+  });
+
+  const pb = $('#procs tbody');
+  pb.innerHTML = '';
+  [...procs].sort((a, b) => (b.mb || 0) - (a.mb || 0)).forEach(p => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${p.kind}</td><td class="num">${p.pid}</td><td class="num">${mb(p.mb)}</td>`;
+    pb.appendChild(tr);
+  });
+});
+</script>
+</body>
+</html>

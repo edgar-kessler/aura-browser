@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Verlauf – Aura</title>
+<link rel="stylesheet" href="/aura.css">
+<style>
+.toolbar{display:flex;align-items:center;gap:12px;margin:0 0 14px;flex-wrap:wrap}
+.toolbar .search-field{flex:1;min-width:240px}
+.ranges{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
+.day{display:flex;align-items:center;gap:10px;margin:26px 0 8px;padding:0 2px}
+.day span{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1.3px;color:rgb(var(--fg-dim));white-space:nowrap}
+.day .n{font-size:11px;color:rgb(var(--fg-dim));opacity:.7}
+.count{font-size:12px;color:rgb(var(--fg-dim));font-variant-numeric:tabular-nums}
+.item.sel{background:rgba(var(--accent),.14);border-color:rgba(var(--accent),.4)}
+.item .tick{width:18px;height:18px;padding:0;border-radius:6px;flex:none;border:1.5px solid rgba(var(--line),.3);
+  background:transparent;cursor:pointer;
+  display:grid;place-items:center;font-size:11px;color:#fff;transition:background .2s var(--ease),border-color .2s}
+.item.sel .tick{background:rgb(var(--accent));border-color:transparent}
+.selbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:10px 14px;margin-bottom:10px;
+  border-radius:var(--r-md);background:rgba(var(--accent),.14);border:1px solid rgba(var(--accent),.3);
+  backdrop-filter:blur(12px)}
+.selbar b{font-variant-numeric:tabular-nums}
+.more{display:block;margin:24px auto 0}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="head"><h1>Verlauf</h1><span class="spacer"></span><span class="count" id="count"></span></div>
+  <p class="lead">Alles, was du besucht hast – lokal gespeichert, nichts verlässt das Gerät.</p>
+
+  <div class="toolbar">
+    <label class="search-field">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="Verlauf durchsuchen …" autocomplete="off">
+    </label>
+    <button class="danger" id="clear">Zeitraum löschen</button>
+  </div>
+  <div class="ranges" id="ranges"></div>
+
+  <div class="selbar" id="selbar" hidden>
+    <b id="selcount">0</b> ausgewählt
+    <span class="spacer"></span>
+    <button id="selopen">In Tabs öffnen</button>
+    <button class="danger" id="seldel">Löschen</button>
+    <button id="selnone">Aufheben</button>
+  </div>
+
+  <div id="list" class="fade"></div>
+  <button class="more" id="more" hidden>Mehr laden</button>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const post = m => window.chrome?.webview?.postMessage(m);
+const host = u => (u || '').replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+const num = n => (n ?? 0).toLocaleString('de-DE');
+
+const RANGES = [
+  ['Heute', 1], ['7 Tage', 7], ['30 Tage', 30], ['Alles', 0],
+];
+let ITEMS = [], LIMIT = 500, RANGE = 0, QUERY = '';
+const SEL = new Set();
+
+function sinceFor(days) {
+  if (!days) return 0;
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return Math.floor(d.getTime() / 1000) - (days - 1) * 86400;
+}
+
+function load() {
+  post({cmd: 'history_query', q: QUERY, since: sinceFor(RANGE), limit: LIMIT});
+}
+
+const ranges = $('#ranges');
+RANGES.forEach(([label, days]) => {
+  const b = document.createElement('button');
+  b.className = 'chip' + (days === RANGE ? ' sel' : '');
+  b.textContent = label;
+  b.dataset.days = days;
+  b.addEventListener('click', () => {
+    RANGE = days;
+    LIMIT = 500;
+    document.querySelectorAll('#ranges .chip').forEach(c => c.classList.toggle('sel', +c.dataset.days === RANGE));
+    load();
+  });
+  ranges.appendChild(b);
+});
+
+let timer = null;
+$('#q').addEventListener('input', e => {
+  QUERY = e.target.value.trim();
+  clearTimeout(timer);
+  timer = setTimeout(load, 160);
+});
+$('#clear').addEventListener('click', () => {
+  const label = RANGES.find(([, d]) => d === RANGE)[0];
+  if (confirm(`Verlauf löschen: ${label}?`)) post({cmd: 'history_remove_since', since: sinceFor(RANGE)});
+});
+$('#more').addEventListener('click', () => { LIMIT += 500; load(); });
+$('#selnone').addEventListener('click', () => { SEL.clear(); render(); });
+$('#selopen').addEventListener('click', () => {
+  [...SEL].slice(0, 20).forEach(u => post({cmd: 'open_new', url: u}));
+  SEL.clear();
+  render();
+});
+$('#seldel').addEventListener('click', () => {
+  post({cmd: 'history_remove', urls: [...SEL]});
+  ITEMS = ITEMS.filter(e => !SEL.has(e.url));
+  SEL.clear();
+  render();
+});
+
+function dayLabel(ts) {
+  const d = new Date(ts * 1000), now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const that = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = (today - that) / 86400000;
+  if (diff === 0) return 'Heute';
+  if (diff === 1) return 'Gestern';
+  if (diff < 7) return d.toLocaleDateString('de-DE', {weekday: 'long'});
+  return d.toLocaleDateString('de-DE', {weekday: 'long', day: 'numeric', month: 'long'});
+}
+const time = ts => new Date(ts * 1000).toLocaleTimeString('de-DE', {hour: '2-digit', minute: '2-digit'});
+
+function row(e) {
+  const h = host(e.url);
+  const d = document.createElement('div');
+  d.className = 'item' + (SEL.has(e.url) ? ' sel' : '');
+  d.innerHTML = `<div class="tick">${SEL.has(e.url) ? '✓' : ''}</div>`
+    + (e.favicon ? `<img class="ico" src="${e.favicon}" alt="">` : `<div class="ph">${(h[0] || 'A').toUpperCase()}</div>`)
+    + `<div class="t"><b></b><small></small></div>`
+    + `<span class="meta">${time(e.last)} · ${e.visits}×</span>`
+    + `<button class="x" title="Aus dem Verlauf entfernen">✕</button>`;
+  d.querySelector('b').textContent = e.title || h;
+  d.querySelector('small').textContent = e.url;
+  d.title = e.url;
+  d.querySelector('.tick').addEventListener('click', ev => {
+    ev.stopPropagation();
+    SEL.has(e.url) ? SEL.delete(e.url) : SEL.add(e.url);
+    render();
+  });
+  d.querySelector('.x').addEventListener('click', ev => {
+    ev.stopPropagation();
+    post({cmd: 'history_remove', url: e.url});
+    ITEMS = ITEMS.filter(x => x.url !== e.url);
+    SEL.delete(e.url);
+    render();
+  });
+  d.addEventListener('click', ev => {
+    if (ev.ctrlKey || ev.metaKey) { post({cmd: 'open_new', url: e.url}); return; }
+    if (ev.shiftKey) { SEL.has(e.url) ? SEL.delete(e.url) : SEL.add(e.url); render(); return; }
+    post({cmd: 'open', url: e.url});
+  });
+  return d;
+}
+
+function render() {
+  const list = $('#list');
+  list.innerHTML = '';
+  $('#selbar').hidden = SEL.size === 0;
+  $('#selcount').textContent = SEL.size;
+  $('#more').hidden = ITEMS.length < LIMIT;
+
+  if (!ITEMS.length) {
+    list.innerHTML = `<div class="empty">${QUERY ? 'Nichts gefunden.' : 'Für diesen Zeitraum ist nichts gespeichert.'}</div>`;
+    return;
+  }
+  let lastDay = null, bucket = null, header = null, n = 0;
+  const flush = () => { if (header) header.querySelector('.n').textContent = `${n} Einträge`; };
+  for (const e of ITEMS) {
+    const dl = dayLabel(e.last);
+    if (dl !== lastDay) {
+      flush();
+      lastDay = dl; n = 0;
+      header = document.createElement('div');
+      header.className = 'day';
+      header.innerHTML = '<span></span><i class="rule"></i><span class="n"></span>';
+      header.querySelector('span').textContent = dl;
+      list.appendChild(header);
+      bucket = list;
+    }
+    n++;
+    bucket.appendChild(row(e));
+  }
+  flush();
+}
+
+window.chrome?.webview?.addEventListener('message', ev => {
+  const m = ev.data;
+  if (m.type !== 'init') return;
+  document.body.classList.toggle('dark', !!m.theme.dark);
+  document.body.classList.toggle('reduce', !!m.theme.reduce);
+  document.documentElement.style.setProperty('--accent', m.theme.accent);
+  const d = m.data || {};
+  ITEMS = d.items || [];
+  $('#count').textContent = `${num(ITEMS.length)} von ${num(d.total)} Einträgen`;
+  render();
+});
+addEventListener('keydown', e => {
+  if (e.key === 'Delete' && SEL.size) $('#seldel').click();
+  if (e.key === 'Escape' && SEL.size) $('#selnone').click();
+  if (e.key === 'f' && e.ctrlKey) { e.preventDefault(); $('#q').focus(); }
+});
+</script>
+</body>
+</html>

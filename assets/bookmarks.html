@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Lesezeichen – Aura</title>
+<link rel="stylesheet" href="/aura.css">
+<style>
+.toolbar{display:flex;gap:10px;margin:0 0 22px}
+.toolbar .search-field{flex:1}
+.folder{display:flex;align-items:center;gap:10px;margin:26px 0 8px;padding:0 2px}
+.folder svg{width:15px;height:15px;stroke:rgb(var(--fg-dim));fill:none;stroke-width:1.8}
+.folder span{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1.3px;color:rgb(var(--fg-dim))}
+.folder .x{border:none;background:none;color:rgb(var(--fg-dim));cursor:pointer;font-size:13px;opacity:.6;padding:2px 6px;border-radius:8px}
+.folder .x:hover{opacity:1;color:rgb(var(--danger));background:rgba(var(--danger),.12);transform:none}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="head"><h1>Lesezeichen</h1><span class="spacer"></span><span class="badge" id="count">0</span></div>
+  <p class="lead">Mit <b>Strg+D</b> oder dem Stern in der Adressleiste speichern.</p>
+  <div class="toolbar">
+    <label class="search-field">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="q" type="search" placeholder="Lesezeichen durchsuchen …" autocomplete="off">
+    </label>
+    <input id="fname" type="text" placeholder="Neuer Ordner …">
+    <button class="primary" id="addfolder">Anlegen</button>
+  </div>
+  <div id="list" class="fade"></div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const post = m => window.chrome?.webview?.postMessage(m);
+const host = u => (u || '').replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+let ITEMS = [];
+
+$('#addfolder').addEventListener('click', () => {
+  const v = $('#fname').value.trim();
+  if (v) { post({cmd: 'add_folder', title: v}); $('#fname').value = ''; }
+});
+$('#fname').addEventListener('keydown', e => { if (e.key === 'Enter') $('#addfolder').click(); });
+$('#q').addEventListener('input', render);
+
+function link(e) {
+  const h = host(e.url);
+  const d = document.createElement('div');
+  d.className = 'item';
+  d.innerHTML = (e.favicon ? `<img class="ico" src="${e.favicon}" alt="">` : `<div class="ph">${(h[0] || 'A').toUpperCase()}</div>`)
+    + `<div class="t"><b></b><small></small></div><button class="x" title="Entfernen">✕</button>`;
+  d.querySelector('b').textContent = e.title || h;
+  d.querySelector('small').textContent = e.url;
+  d.title = e.url;
+  d.addEventListener('click', ev => {
+    if (ev.target.classList.contains('x')) return;
+    post({cmd: ev.ctrlKey ? 'open_new' : 'open', url: e.url});
+  });
+  d.querySelector('.x').addEventListener('click', () => post({cmd: 'remove_bookmark', id: e.id}));
+  return d;
+}
+
+function render() {
+  const q = $('#q').value.trim().toLowerCase();
+  const list = $('#list');
+  list.innerHTML = '';
+  const folders = ITEMS.filter(i => i.folder);
+  let links = ITEMS.filter(i => !i.folder);
+  if (q) links = links.filter(e => (e.title || '').toLowerCase().includes(q) || (e.url || '').toLowerCase().includes(q));
+  $('#count').textContent = `${links.length}`;
+
+  if (!ITEMS.length) {
+    list.innerHTML = '<div class="empty">Noch keine Lesezeichen.<br>Speichere Seiten mit <b>Strg+D</b>.</div>';
+    return;
+  }
+  if (!links.length && q) {
+    list.innerHTML = '<div class="empty">Nichts gefunden.</div>';
+    return;
+  }
+  links.filter(l => !folders.some(f => f.id === l.parent)).forEach(e => list.appendChild(link(e)));
+  folders.forEach(f => {
+    const kids = links.filter(l => l.parent === f.id);
+    if (q && !kids.length) return;
+    const h = document.createElement('div');
+    h.className = 'folder';
+    h.innerHTML = `<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+                   <span></span><i class="rule"></i><button class="x" title="Ordner löschen">✕</button>`;
+    h.querySelector('span').textContent = f.title;
+    h.querySelector('.x').addEventListener('click', () => post({cmd: 'remove_bookmark', id: f.id}));
+    list.appendChild(h);
+    kids.forEach(e => list.appendChild(link(e)));
+  });
+}
+
+window.chrome?.webview?.addEventListener('message', ev => {
+  const m = ev.data;
+  if (m.type !== 'init') return;
+  document.body.classList.toggle('dark', !!m.theme.dark);
+  document.body.classList.toggle('reduce', !!m.theme.reduce);
+  document.documentElement.style.setProperty('--accent', m.theme.accent);
+  ITEMS = m.data.items || [];
+  render();
+});
+</script>
+</body>
+</html>

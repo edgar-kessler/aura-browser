@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Aura Browser</title>
+<link rel="stylesheet" href="/aura.css">
+<style>
+html,body{height:100%}
+body{
+  overflow-x:hidden; overflow-y:auto;
+  display:flex; flex-direction:column; align-items:center;
+  padding:0 24px 96px;
+}
+/* ---------- ambient aurora ---------- */
+.aurora{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+.aurora i{
+  position:absolute;display:block;border-radius:50%;filter:blur(90px);opacity:.5;
+  animation:drift 26s var(--ease) infinite alternate;
+}
+.aurora i:nth-child(1){width:46vw;height:46vw;left:-8vw;top:-14vw;background:rgba(var(--accent),.42)}
+.aurora i:nth-child(2){width:38vw;height:38vw;right:-6vw;top:-8vw;background:rgba(154,122,224,.30);animation-delay:-9s}
+.aurora i:nth-child(3){width:52vw;height:34vw;left:22vw;bottom:-20vw;background:rgba(var(--accent),.24);animation-delay:-16s}
+@keyframes drift{
+  0%{transform:translate3d(0,0,0) scale(1)}
+  50%{transform:translate3d(3vw,4vh,0) scale(1.08)}
+  100%{transform:translate3d(-3vw,-3vh,0) scale(.96)}
+}
+.wrap{position:relative;z-index:1;width:min(940px,100%);display:flex;flex-direction:column;align-items:center}
+/* ---------- hero ---------- */
+.hero{padding:9vh 0 0;text-align:center;animation:rise .5s var(--ease) both}
+h1{
+  font-size:clamp(38px,5.4vw,60px);font-weight:600;letter-spacing:-1.6px;line-height:1.08;
+  background:linear-gradient(115deg,rgb(var(--accent)),#b79df5 55%,rgb(var(--accent)));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.sub{margin-top:8px;font-size:16px;color:rgb(var(--fg-dim))}
+/* ---------- search ---------- */
+.search{
+  margin:30px auto 0;width:min(600px,92%);
+  display:flex;align-items:center;gap:12px;
+  padding:15px 20px;border-radius:999px;cursor:text;font-size:15px;
+  background:rgba(var(--card),var(--card-a));
+  border:1px solid rgba(var(--line),var(--line-a));
+  backdrop-filter:blur(12px);
+  transition:transform .25s var(--ease),border-color .25s var(--ease),box-shadow .25s var(--ease);
+}
+.search:hover{
+  transform:translateY(-1px);
+  border-color:rgba(var(--accent),.55);
+  box-shadow:0 10px 34px -12px rgba(var(--accent),.55);
+}
+.search .ico{width:18px;height:18px;flex:none;stroke:rgb(var(--fg-dim));fill:none;stroke-width:2}
+.search input{flex:1;min-width:0;border:none;background:none;padding:0;color:inherit;font:inherit;font-size:15px}
+.search input:focus{outline:none;box-shadow:none}
+.search input::placeholder{color:rgb(var(--fg-dim))}
+.search:focus-within{border-color:rgb(var(--accent));box-shadow:0 0 0 3px rgba(var(--accent),.18),0 10px 34px -12px rgba(var(--accent),.55)}
+.search .keys{margin-left:auto;display:flex;gap:5px;flex:none;opacity:0;transition:opacity .2s var(--ease)}
+.search:focus-within .keys{opacity:1}
+/* ---------- chips ---------- */
+.chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:16px}
+.chip{
+  display:inline-flex;align-items:center;gap:7px;
+  padding:7px 14px;border-radius:999px;font-size:13px;cursor:pointer;
+  background:rgba(var(--card),var(--card-a));
+  border:1px solid rgba(var(--line),var(--line-a));
+  color:rgb(var(--fg-dim));
+  transition:transform .2s var(--ease),color .2s,border-color .2s,background .2s;
+}
+.chip:hover{transform:translateY(-1px);color:rgb(var(--accent));border-color:rgba(var(--accent),.45);background:rgba(var(--accent),.10)}
+.chip svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:2}
+/* ---------- sections ---------- */
+section{width:100%;margin-top:44px;animation:rise .5s var(--ease) both}
+section:nth-of-type(2){animation-delay:.06s}
+section:nth-of-type(3){animation-delay:.12s}
+.shead{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding:0 2px}
+.shead h2{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1.4px;color:rgb(var(--fg-dim))}
+.shead .line{flex:1;height:1px;background:rgba(var(--line),var(--line-a))}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:12px}
+.tile{
+  position:relative;display:flex;align-items:center;gap:11px;
+  padding:14px;border-radius:var(--r-lg);cursor:pointer;overflow:hidden;
+  background:rgba(var(--card),var(--card-a));
+  border:1px solid rgba(var(--line),var(--line-a));
+  transition:transform .28s var(--ease),border-color .28s,box-shadow .28s,background .28s;
+}
+.tile::after{
+  content:"";position:absolute;inset:0;border-radius:inherit;opacity:0;
+  background:radial-gradient(180px 90px at var(--mx,50%) var(--my,0%),rgba(var(--accent),.16),transparent 70%);
+  transition:opacity .3s var(--ease);pointer-events:none;
+}
+.tile:hover{transform:translateY(-3px);border-color:rgba(var(--accent),.42);box-shadow:0 14px 34px -18px rgba(var(--accent),.85)}
+.tile:hover::after{opacity:1}
+.tile:active{transform:translateY(-1px) scale(.99)}
+.tile img{width:26px;height:26px;border-radius:8px;flex:none}
+.tile .ph{
+  width:26px;height:26px;border-radius:8px;flex:none;display:grid;place-items:center;
+  font-size:12px;font-weight:600;color:rgb(var(--accent));background:rgba(var(--accent),.16);
+}
+.tile .txt{min-width:0}
+.tile b{display:block;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile small{display:block;font-size:11px;color:rgb(var(--fg-dim));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* ---------- shield card ---------- */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.stat{
+  padding:16px 18px;border-radius:var(--r-lg);
+  background:rgba(var(--card),var(--card-a));
+  border:1px solid rgba(var(--line),var(--line-a));
+  transition:transform .28s var(--ease),border-color .28s;
+}
+.stat:hover{transform:translateY(-2px);border-color:rgba(var(--accent),.35)}
+.stat .k{display:flex;align-items:center;gap:8px;font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:rgb(var(--fg-dim))}
+.stat .k svg{width:14px;height:14px;stroke:rgb(var(--accent));fill:none;stroke-width:2}
+.stat .v{margin-top:8px;font-size:26px;font-weight:600;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+.stat .v em{font-style:normal;font-size:13px;font-weight:400;color:rgb(var(--fg-dim));margin-left:6px}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:500;
+  background:rgba(var(--accent),.16);color:rgb(var(--accent))}
+.badge.off{background:rgba(var(--line),.12);color:rgb(var(--fg-dim))}
+.empty{font-size:13px;color:rgb(var(--fg-dim));padding:16px 2px}
+/* ---------- footer ---------- */
+.hint{position:relative;z-index:1;margin-top:52px;width:100%;text-align:center;font-size:12px;color:rgb(var(--fg-dim));opacity:.7;pointer-events:none}
+kbd{padding:2px 7px;border-radius:7px;border:1px solid rgba(var(--line),.22);font-size:11px;font-family:inherit}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+body.reduce *,body.reduce .aurora i{animation:none!important;transition:none!important}
+</style>
+</head>
+<body>
+<div class="aurora"><i></i><i></i><i></i></div>
+<div class="wrap">
+  <div class="hero">
+    <h1 id="greet">Aura</h1>
+    <p class="sub" id="sub">Clean. Schnell. Für Windows.</p>
+    <form class="search" id="search" autocomplete="off">
+      <svg class="ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="q" type="text" placeholder="Suchen oder Adresse eingeben …"
+             autocomplete="off" spellcheck="false" enterkeyhint="go">
+      <span class="keys"><kbd>Enter</kbd></span>
+    </form>
+    <div class="chips" id="chips"></div>
+  </div>
+
+  <section id="sec-shield">
+    <div class="shead"><h2>Aura Shield</h2><span class="line"></span><span id="shield-badge" class="badge">aktiv</span></div>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <section id="sec-top" hidden>
+    <div class="shead"><h2>Häufig besucht</h2><span class="line"></span></div>
+    <div class="grid" id="topsites"></div>
+  </section>
+
+  <section id="sec-bm" hidden>
+    <div class="shead"><h2>Lesezeichen</h2><span class="line"></span></div>
+    <div class="grid" id="bookmarks"></div>
+  </section>
+
+  <div class="hint"><kbd>Strg</kbd>+<kbd>T</kbd> Neuer Tab &nbsp;·&nbsp; <kbd>Strg</kbd>+<kbd>K</kbd> Befehle &nbsp;·&nbsp; <kbd>F11</kbd> Vollbild</div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const post = m => window.chrome?.webview?.postMessage(m);
+const num = n => (n ?? 0).toLocaleString('de-DE');
+const host = u => (u || '').replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+
+// Suche läuft direkt hier – die Adressleiste oben bleibt zu.
+$('#search').addEventListener('submit', e => {
+  e.preventDefault();
+  const q = $('#q').value.trim();
+  if (q) post({cmd: 'search', q});
+});
+addEventListener('DOMContentLoaded', () => $('#q').focus());
+
+const CHIPS = [
+  ['Verlauf', 'aura://history', '<path d="M12 7v5l3 2"/><circle cx="12" cy="12" r="9"/>'],
+  ['Lesezeichen', 'aura://bookmarks', '<path d="M6 4h12v16l-6-4-6 4z"/>'],
+  ['Downloads', 'aura://downloads', '<path d="M12 4v10m0 0l-4-4m4 4l4-4M5 19h14"/>'],
+  ['Einstellungen', 'aura://settings', '<circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6l2.1 2.1m0-12.8l-2.1 2.1M7.7 16.3l-2.1 2.1"/>'],
+];
+const chips = $('#chips');
+for (const [label, url, path] of CHIPS) {
+  const b = document.createElement('button');
+  b.className = 'chip';
+  b.innerHTML = `<svg viewBox="0 0 24 24">${path}</svg>${label}`;
+  b.addEventListener('click', () => post({cmd: 'open', url}));
+  chips.appendChild(b);
+}
+
+function tile(e) {
+  const d = document.createElement('div');
+  d.className = 'tile';
+  const h = host(e.url);
+  const icon = e.favicon
+    ? `<img src="${e.favicon}" alt="">`
+    : `<div class="ph">${(h[0] || 'A').toUpperCase()}</div>`;
+  d.innerHTML = `${icon}<div class="txt"><b></b><small></small></div>`;
+  d.querySelector('b').textContent = e.title || h;
+  d.querySelector('small').textContent = h;
+  d.title = e.url;
+  d.addEventListener('pointermove', ev => {
+    const r = d.getBoundingClientRect();
+    d.style.setProperty('--mx', `${ev.clientX - r.left}px`);
+    d.style.setProperty('--my', `${ev.clientY - r.top}px`);
+  });
+  d.addEventListener('click', ev => post({cmd: ev.ctrlKey ? 'open_new' : 'open', url: e.url}));
+  return d;
+}
+
+function stat(icon, key, value, unit) {
+  return `<div class="stat"><div class="k"><svg viewBox="0 0 24 24">${icon}</svg>${key}</div>
+          <div class="v">${value}${unit ? `<em>${unit}</em>` : ''}</div></div>`;
+}
+
+const I_SHIELD = '<path d="M12 3l7 3v5c0 4.4-3 8.3-7 10-4-1.7-7-5.6-7-10V6z"/>';
+const I_LIST = '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>';
+const I_EYE = '<path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.5"/>';
+
+window.chrome?.webview?.addEventListener('message', ev => {
+  const m = ev.data;
+  if (m.type !== 'init') return;
+  const t = m.theme, d = m.data || {};
+  document.body.classList.toggle('dark', !!t.dark);
+  document.body.classList.toggle('reduce', !!t.reduce);
+  document.documentElement.style.setProperty('--accent', t.accent);
+
+  const h = new Date().getHours();
+  $('#greet').textContent = h < 5 ? 'Gute Nacht' : h < 11 ? 'Guten Morgen' : h < 18 ? 'Guten Tag' : 'Guten Abend';
+  if (t.private) $('#sub').textContent = 'Privates Fenster – nichts wird gespeichert.';
+
+  const s = d.shield || {};
+  $('#shield-badge').textContent = s.on ? 'aktiv' : 'aus';
+  $('#shield-badge').className = 'badge' + (s.on ? '' : ' off');
+  $('#stats').innerHTML =
+    stat(I_SHIELD, 'Blockiert insgesamt', num(s.blocked)) +
+    stat(I_LIST, 'Filterregeln', num(s.rules)) +
+    stat(I_EYE, 'Kosmetikregeln', num(s.cosmetic));
+
+  const tops = d.topsites || [], bms = d.bookmarks || [];
+  if (tops.length) {
+    $('#sec-top').hidden = false;
+    const g = $('#topsites'); g.innerHTML = '';
+    tops.forEach(e => g.appendChild(tile(e)));
+  }
+  if (bms.length) {
+    $('#sec-bm').hidden = false;
+    const g = $('#bookmarks'); g.innerHTML = '';
+    bms.forEach(e => g.appendChild(tile(e)));
+  }
+});
+</script>
+</body>
+</html>
