@@ -2,29 +2,60 @@
 #
 #   powershell -ExecutionPolicy Bypass -File publish.ps1
 #
-# Der einzige Schritt, der dich braucht, ist die Anmeldung bei GitHub – dabei
+# Der einzige Schritt, der dich braucht, ist die Anmeldung bei GitHub - dabei
 # oeffnet sich dein Browser und du bestaetigst einen Code. Danach laeuft alles
 # automatisch: Repository anlegen, Code hochladen, Tag setzen. Die GitHub-Action
 # baut daraus das Windows-Paket und haengt es an das Release; genau dieses Paket
 # holt sich der eingebaute Auto-Updater.
 
-$ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
-$env:PATH = "$env:LOCALAPPDATA\Programs\GitHub CLI;$env:ProgramFiles\GitHub CLI;$env:PATH"
 
 function Step($text) { Write-Host "`n== $text" -ForegroundColor Cyan }
+function Fail($text) { Write-Host "`n$text" -ForegroundColor Red; exit 1 }
+
+# ------------------------------------------------------------ gh.exe finden
+# winget legt gh unter Program Files ab. Der Maschinen-PATH kennt das zwar,
+# aber bereits offene Konsolen haben den alten PATH - deshalb direkt suchen.
+$ghCandidates = @(
+    "$env:ProgramFiles\GitHub CLI\gh.exe",
+    "${env:ProgramFiles(x86)}\GitHub CLI\gh.exe",
+    "$env:LOCALAPPDATA\Programs\GitHub CLI\gh.exe"
+)
+$gh = $ghCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $gh) {
+    $cmd = Get-Command gh -ErrorAction SilentlyContinue
+    if ($cmd) { $gh = $cmd.Source }
+}
+if (-not $gh) {
+    Write-Host "GitHub CLI fehlt. Installiere sie mit:" -ForegroundColor Yellow
+    Write-Host "  winget install --id GitHub.cli"
+    Fail "Danach dieses Skript erneut starten."
+}
+
+# Native Programme schreiben Fortschritt nach stderr; PowerShell 5.1 macht daraus
+# Fehler. Deshalb hier gebuendelt aufrufen und nur den Exit-Code auswerten.
+function Invoke-Native {
+    param([string]$Exe, [string[]]$Args, [switch]$Quiet)
+    $out = & $Exe @Args 2>&1
+    if (-not $Quiet) { $out | ForEach-Object { Write-Host "   $_" } }
+    return @{ Code = $LASTEXITCODE; Output = ($out -join "`n") }
+}
 
 # ---------------------------------------------------------------- 1. Anmeldung
 Step "GitHub-Anmeldung"
-gh auth status 2>$null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Es oeffnet sich gleich dein Browser. Code eingeben, fertig." -ForegroundColor Yellow
-    gh auth login --hostname github.com --git-protocol https --web
-    if ($LASTEXITCODE -ne 0) { throw "Anmeldung abgebrochen." }
+$status = Invoke-Native $gh @('auth', 'status') -Quiet
+if ($status.Code -ne 0) {
+    Write-Host "Es oeffnet sich gleich dein Browser." -ForegroundColor Yellow
+    Write-Host "Waehle 'Login with a web browser', kopiere den Code, fertig.`n"
+    & $gh auth login --hostname github.com --git-protocol https --web
+    $status = Invoke-Native $gh @('auth', 'status') -Quiet
+    if ($status.Code -ne 0) { Fail "Anmeldung nicht abgeschlossen - Skript erneut starten." }
 }
-gh auth setup-git
-$user = (gh api user --jq .login).Trim()
-Write-Host "Angemeldet als $user"
+Invoke-Native $gh @('auth', 'setup-git') -Quiet | Out-Null
+$user = (& $gh api user --jq .login 2>$null | Select-Object -First 1)
+if (-not $user) { Fail "Konnte den Benutzernamen nicht lesen." }
+$user = $user.Trim()
+Write-Host "Angemeldet als $user" -ForegroundColor Green
 
 # ------------------------------------------------- 2. Repo-Namen im Code fixen
 $repo = "$user/aura-browser"
@@ -34,43 +65,54 @@ $content = Get-Content $updateRs -Raw
 $wanted = 'pub const REPO: &str = "' + $repo + '";'
 if ($content -notmatch [regex]::Escape($wanted)) {
     $content = $content -replace 'pub const REPO: &str = "[^"]*";', $wanted
-    Set-Content $updateRs $content -NoNewline -Encoding utf8
-    git add $updateRs
-    git commit -q -m "Auto-Updater auf $repo zeigen lassen"
-    Write-Host "angepasst"
+    [System.IO.File]::WriteAllText((Resolve-Path $updateRs), $content, (New-Object System.Text.UTF8Encoding($false)))
+    Invoke-Native 'git' @('add', $updateRs) -Quiet | Out-Null
+    Invoke-Native 'git' @('commit', '-q', '-m', "Auto-Updater auf $repo zeigen lassen") -Quiet | Out-Null
+    Write-Host "   angepasst"
 } else {
-    Write-Host "schon korrekt"
+    Write-Host "   schon korrekt"
 }
 
 # ---------------------------------------------------------------- 3. Repository
 Step "Repository anlegen"
-gh repo view $repo 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    gh repo create $repo --public --source=. --remote=origin --push `
-        --description "Nativer Windows-Browser in Rust - ohne Electron, mit eigenem Adblocker"
+$exists = Invoke-Native $gh @('repo', 'view', $repo) -Quiet
+if ($exists.Code -ne 0) {
+    $create = Invoke-Native $gh @(
+        'repo', 'create', $repo, '--public', '--source=.', '--remote=origin', '--push',
+        '--description', 'Nativer Windows-Browser in Rust - ohne Electron, mit eigenem Adblocker'
+    )
+    if ($create.Code -ne 0) { Fail "Repository konnte nicht angelegt werden." }
 } else {
-    Write-Host "existiert bereits, pushe nur"
-    if (-not (git remote | Select-String -Quiet origin)) {
-        git remote add origin "https://github.com/$repo.git"
+    Write-Host "   existiert bereits, pushe nur"
+    $remotes = (& git remote 2>$null) -join ' '
+    if ($remotes -notmatch 'origin') {
+        Invoke-Native 'git' @('remote', 'add', 'origin', "https://github.com/$repo.git") -Quiet | Out-Null
     }
-    git push -u origin main
+    $push = Invoke-Native 'git' @('push', '-u', 'origin', 'main')
+    if ($push.Code -ne 0) { Fail "Push fehlgeschlagen." }
 }
 
 # ------------------------------------------------------------------- 4. Themen
 Step "Themen setzen"
-gh repo edit $repo --add-topic browser --add-topic rust --add-topic windows `
-    --add-topic webview2 --add-topic adblocker --add-topic direct2d 2>$null
+Invoke-Native $gh @(
+    'repo', 'edit', $repo,
+    '--add-topic', 'browser', '--add-topic', 'rust', '--add-topic', 'windows',
+    '--add-topic', 'webview2', '--add-topic', 'adblocker', '--add-topic', 'direct2d'
+) -Quiet | Out-Null
 
 # ------------------------------------------------------------------ 5. Release
 $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
 $tag = "v$version"
 Step "Release $tag"
-if (git tag -l $tag) {
-    Write-Host "Tag existiert bereits"
+$hasTag = (& git tag -l $tag 2>$null) -join ''
+if (-not $hasTag) {
+    Invoke-Native 'git' @('tag', '-a', $tag, '-m', "Aura Browser $version") -Quiet | Out-Null
+    Write-Host "   Tag $tag angelegt"
 } else {
-    git tag -a $tag -m "Aura Browser $version"
+    Write-Host "   Tag existiert bereits"
 }
-git push origin $tag
+$pushTag = Invoke-Native 'git' @('push', 'origin', $tag)
+if ($pushTag.Code -ne 0) { Fail "Tag konnte nicht gepusht werden." }
 
 Write-Host "`nFertig." -ForegroundColor Green
 Write-Host "Repository:  https://github.com/$repo"
