@@ -5,9 +5,20 @@ use std::path::Path;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=assets/aura.ico");
     let out_dir = env::var("OUT_DIR").unwrap();
-    let ico_path = Path::new(&out_dir).join("aura.ico");
-    write_icon(&ico_path);
+
+    // Bevorzugt das gepflegte Mehrgroessen-Icon aus assets/ (siehe
+    // tools/make_icon.py). Fehlt es, wird ein einfaches 32x32 erzeugt, damit
+    // der Build ohne Python funktioniert.
+    let repo_ico = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join("aura.ico");
+    let ico_path = if repo_ico.is_file() {
+        repo_ico
+    } else {
+        let p = Path::new(&out_dir).join("aura.ico");
+        write_icon(&p);
+        p
+    };
 
     let rc_path = Path::new(&out_dir).join("aura.rc");
     let ico_fwd = ico_path.to_string_lossy().replace('\\', "/");

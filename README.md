@@ -42,6 +42,19 @@ Gegen Chrome und Edge, je drei Läufe mit frischen Profilen auf dieselbe Testsei
 Mit 150 wiederhergestellten Tabs: **471 MB**, weil nur der sichtbare Tab einen
 Renderer startet ([`bench/stress_tabs.py`](bench/stress_tabs.py)).
 
+## Installieren
+
+Fertigen Installer aus den [Releases](https://github.com/edgar-kessler/aura-browser/releases)
+laden (`AuraBrowserSetup-*.exe`) und ausführen. Er installiert pro Benutzer nach
+`%LOCALAPPDATA%\Programs\Aura Browser` — bewusst ohne Administratorrechte, damit
+der eingebaute Updater die Dateien später selbst austauschen kann. Auf Wunsch legt
+er Verknüpfungen an und meldet Aura bei Windows als Browser an, sodass er unter
+*Einstellungen → Standard-Apps* auswählbar ist. Fehlt die WebView2-Laufzeit
+(auf Windows 11 ist sie vorhanden), bietet der Installer an, sie nachzuinstallieren.
+
+Wer lieber nichts installiert: das ZIP aus demselben Release entpacken und
+`aura-browser.exe` starten.
+
 ## Bauen
 
 Voraussetzungen: Rust (stable), die WebView2-Laufzeit (auf Windows 11 vorhanden).
