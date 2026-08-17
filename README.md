@@ -62,7 +62,7 @@ wird an Ort und Stelle aktualisiert; entfernt wird über *Apps & Features* oder
 Ohne Fenster, etwa für Skripte:
 
 ```bash
-AuraBrowserSetup-0.1.10.exe --silent
+AuraBrowserSetup-0.1.11.exe --silent
 ```
 
 Weitere Schalter (`--dir=`, `--no-desktop-icon`, `--no-register`, `--purge`,

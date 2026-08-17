@@ -1,7 +1,7 @@
 ﻿# Die Version steht hier ganz oben und gilt fuer Browser und Installer.
 # (publish.ps1 und installer/build.ps1 lesen die erste version-Zeile.)
 [workspace.package]
-version = "0.1.10"
+version = "0.1.11"
 
 # Der Installer (installer/) ist ein eigenes Paket im selben Arbeitsbereich.
 # `cargo build --release` baut weiterhin nur den Browser; das fertige Setup
