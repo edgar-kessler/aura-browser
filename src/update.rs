@@ -107,7 +107,14 @@ pub fn download(rel: &Release) -> Option<PathBuf> {
     let dir = work_dir();
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).ok()?;
-    let zip = dir.join(&rel.asset_name);
+    // Der Name kommt aus der API-Antwort – er bleibt ein blosser Dateiname.
+    let name: String = rel
+        .asset_name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .collect();
+    let name = if name.trim_matches('.').is_empty() { "update.zip".to_string() } else { name };
+    let zip = dir.join(name);
     curl(&["-o", &zip.to_string_lossy(), &rel.asset_url])?;
     let meta = std::fs::metadata(&zip).ok()?;
     if meta.len() < 100_000 {

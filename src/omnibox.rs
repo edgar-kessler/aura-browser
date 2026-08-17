@@ -54,7 +54,9 @@ pub fn edit_text(edit: HWND) -> String {
 
 pub fn search_url(app: &App, query: &str) -> String {
     let engine = app.storage.get_setting("search_engine", "google");
-    let q = query.replace(' ', "+");
+    // Alles ausser Leerzeichen prozentkodiert – ein "&" oder "#" in der
+    // Suche darf die Adresse nicht umbauen.
+    let q = crate::util::urlencode(query).replace("%20", "+");
     match engine.as_str() {
         "bing" => format!("https://www.bing.com/search?q={q}"),
         "duckduckgo" => format!("https://duckduckgo.com/?q={q}"),

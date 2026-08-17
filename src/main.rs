@@ -29,7 +29,7 @@ fn main() {
 
     // Kopfloser Update-Lauf: prueft, laedt, entpackt und beendet sich. Damit
     // laesst sich das Update per Skript ausloesen und ueberhaupt testen.
-    if std::env::args().any(|a| a == "--self-update") {
+    if std::env::args_os().any(|a| a == "--self-update") {
         std::process::exit(self_update());
     }
 
@@ -49,6 +49,13 @@ fn main() {
         Ok(mut app) => {
             if let Err(e) = app.run() {
                 eprintln!("Aura error: {e}");
+            }
+            // Ein privates Fenster hinterlaesst nichts: erst die Datenbank
+            // schliessen (App fallen lassen), dann den Profilordner loeschen.
+            let private_dir = app.private_data_dir();
+            drop(app);
+            if let Some(dir) = private_dir {
+                let _ = std::fs::remove_dir_all(dir);
             }
         }
         Err(e) => {

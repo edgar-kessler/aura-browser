@@ -70,6 +70,21 @@ pub const GROUP_COLORS: &[(&str, &str)] = &[
     ("Grau", "#8A8A9A"),
 ];
 
+/// Lebt der Prozess mit dieser PID noch?
+fn process_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::*;
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let mut code = 0u32;
+        let alive = GetExitCodeProcess(h, &mut code).is_ok() && code == STILL_ACTIVE.0 as u32;
+        let _ = CloseHandle(h);
+        alive
+    }
+}
+
 impl Storage {
     /// Root data dir: %LOCALAPPDATA%\AuraBrowser\<profile>\
     pub fn data_dir(profile: &str) -> PathBuf {
@@ -79,6 +94,26 @@ impl Storage {
         let dir = base.join("AuraBrowser").join(profile);
         let _ = std::fs::create_dir_all(&dir);
         dir
+    }
+
+    /// Private Profile heissen `__private_<pid>` und werden nach dem Lauf
+    /// geloescht. Bleibt eines liegen (Absturz), raeumt der naechste Start es
+    /// weg – sobald der Prozess mit dieser PID nicht mehr lebt.
+    pub fn sweep_private_leftovers() {
+        let base = std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("AuraBrowser");
+        let Ok(rd) = std::fs::read_dir(&base) else { return };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let Some(pid) = name.strip_prefix("__private_").and_then(|p| p.parse::<u32>().ok()) else {
+                continue;
+            };
+            if pid != std::process::id() && !process_alive(pid) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
     }
 
     pub fn open(profile: &str) -> std::result::Result<Storage, String> {

@@ -123,6 +123,14 @@ fn parse(args: &[String]) -> Args {
 }
 
 fn main() {
+    // Spaeter nachgeladene DLLs (COM, WIC, Codecs) nur aus System32 – nicht aus
+    // dem Ordner, in dem das Setup gerade liegt, meist Downloads. Die statisch
+    // eingebundenen DLLs regelt das Linker-Flag in build.rs.
+    unsafe {
+        let _ = windows::Win32::System::LibraryLoader::SetDefaultDllDirectories(
+            windows::Win32::System::LibraryLoader::LOAD_LIBRARY_SEARCH_SYSTEM32,
+        );
+    }
     // Ein Absturz soll wenigstens im Protokoll stehen – ein Programm ohne
     // Konsole stirbt sonst stumm.
     std::panic::set_hook(Box::new(|info| {

@@ -103,6 +103,16 @@ END
     fs::write(&rc_path, rc).unwrap();
     embed_resource::compile(&rc_path, embed_resource::NONE);
 
+    // Ein Setup wird aus dem Download-Ordner gestartet – neben Dateien, die
+    // Fremde dort abgelegt haben koennten. Windows sucht DLLs zuerst im Ordner
+    // der Programmdatei; eine untergeschobene dwmapi.dll oder winhttp.dll
+    // liefe mit. Dieses Linker-Flag laesst die statisch eingebundenen DLLs nur
+    // aus System32 laden (LOAD_LIBRARY_SEARCH_SYSTEM32). Nur der MSVC-Linker
+    // kennt es; die Veroeffentlichung baut damit.
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        println!("cargo:rustc-link-arg-bins=/DEPENDENTLOADFLAG:0x800");
+    }
+
     // MinGW haengt jedem Programm ein eigenes Standard-Manifest an
     // (default-manifest.o aus der CRT). Zusammen mit unserem waeren das zwei,
     // und welches Windows dann liest, ist Glueckssache. gcc sucht die Datei

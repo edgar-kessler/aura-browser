@@ -219,6 +219,12 @@ pub fn real_url(display: &str) -> String {
     }
 }
 
+/// Gehört eine Adresse zu unseren eigenen Seiten? Nur `https://aura.internal/`
+/// selbst – kein Unterhost, kein Nutzer-Teil, kein anderer Port.
+pub fn is_internal_url(url: &str) -> bool {
+    url == "https://aura.internal" || url.starts_with("https://aura.internal/")
+}
+
 pub fn display_url(real: &str) -> String {
     if let Some(rest) = real.strip_prefix("https://aura.internal/") {
         let page = rest.split(['?', '#']).next().unwrap_or(rest);
@@ -256,12 +262,20 @@ pub fn attach_events(
             let uri = get_str(|p| unsafe { args.Uri(p) });
             if crate::adblock::https_only() {
                 if let Some(rest) = uri.strip_prefix("http://") {
-                    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-                    let local = host.starts_with("localhost")
-                        || host.starts_with("127.0.0.1")
-                        || host.starts_with("[::1]")
+                    // Den Host sauber herausloesen – ohne Nutzerteil und Port.
+                    // Ein Praefix-Vergleich liesse "localhost.evil.com" oder
+                    // "localhost@evil.com" als lokal durchgehen.
+                    let host = crate::adblock::host_of_url(&uri).to_ascii_lowercase();
+                    let local = host == "localhost"
+                        || host == "127.0.0.1"
+                        || host == "[::1]"
                         || host.ends_with(".localhost");
-                    if !local && !crate::adblock::http_allowed(host) {
+                    // Ausnahmen sind unter "host" oder "host:port" gemerkt.
+                    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+                    let authority = authority.rsplit('@').next().unwrap_or(authority);
+                    let allowed = crate::adblock::http_allowed(&host)
+                        || crate::adblock::http_allowed(authority);
+                    if !local && !allowed {
                         unsafe {
                             let _ = args.SetCancel(true);
                         }
@@ -279,6 +293,26 @@ pub fn attach_events(
     }));
     unsafe {
         let _ = webview.add_NavigationStarting(&h, &mut token);
+    }
+    guards.push(Box::new(h));
+
+    // --- unsere Seiten gehören in keinen fremden Rahmen ---
+    // Eine Web-Seite könnte aura.internal als iframe laden; die eingebettete
+    // Seite fordert dann arglos ihre Daten an, und die Antwort geht an das
+    // oberste Dokument – also an den Fremden. Rahmen dorthin gibt es nicht.
+    let h = NavigationStartingEventHandler::create(Box::new(move |_wv, args| {
+        if let Some(args) = args {
+            let uri = get_str(|p| unsafe { args.Uri(p) });
+            if is_internal_url(&uri) {
+                unsafe {
+                    let _ = args.SetCancel(true);
+                }
+            }
+        }
+        Ok(())
+    }));
+    unsafe {
+        let _ = webview.add_FrameNavigationStarting(&h, &mut token);
     }
     guards.push(Box::new(h));
 
@@ -568,8 +602,16 @@ pub fn attach_events(
     guards.push(Box::new(h));
 
     // --- messages from internal pages (chrome.webview.postMessage) ---
+    // chrome.webview.postMessage steht jeder Seite offen. Die Befehle dahinter
+    // (Passwort zeigen, Datei öffnen, Einstellungen ändern) gehören aber nur
+    // unseren eigenen Seiten – deshalb zählt allein die Herkunft, die WebView2
+    // selbst meldet, nicht der Inhalt der Nachricht.
     let h = WebMessageReceivedEventHandler::create(Box::new(move |_wv, args| {
         if let Some(args) = args {
+            let source = get_str(|p| unsafe { args.Source(p) });
+            if !is_internal_url(&source) {
+                return Ok(());
+            }
             let json = get_str(|p| unsafe { args.WebMessageAsJson(p) });
             post(AppMsg::WebMessage { tab: tab_id, json });
         }

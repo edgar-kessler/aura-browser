@@ -366,6 +366,12 @@ fn count_passwords(app: &App) -> i64 {
 }
 
 pub fn handle_message(app: &mut App, tab_id: u32, json_str: &str) {
+    // Zweite Sicherung neben der Herkunftsprüfung in tabs.rs: Befehle gibt es
+    // nur, solange oben im Tab eine unserer Seiten steht. Die Antworten gehen
+    // an das oberste Dokument – das darf kein fremdes sein.
+    if !app.tabs.iter().any(|t| t.id == tab_id && t.is_internal) {
+        return;
+    }
     let Ok(v) = serde_json::from_str::<Value>(json_str) else { return };
     let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
     match cmd {
@@ -725,7 +731,14 @@ pub fn chrome_profiles() -> Vec<(String, String)> {
 }
 
 fn chrome_dir(profile: &str) -> Option<std::path::PathBuf> {
-    let p = if profile.is_empty() { "Default" } else { profile };
+    // Chrome nennt seine Profile "Default" und "Profile N" – mehr Zeichen
+    // braucht der Name nicht, und ein Pfad darf er nie werden.
+    let clean: String = profile
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
+        .take(64)
+        .collect();
+    let p = if clean.trim().is_empty() { "Default".to_string() } else { clean };
     let dir = chrome_root()?.join(p);
     dir.exists().then_some(dir)
 }
@@ -803,7 +816,7 @@ fn import_bm_node(app: &App, node: &Value, parent: i64, count: &mut usize) {
 
 fn import_chrome_history(app: &App, dir: &std::path::Path) -> Result<usize, String> {
     let src = dir.join("History");
-    let tmp = std::env::temp_dir().join("aura_chrome_history_copy");
+    let tmp = std::env::temp_dir().join(format!("aura_chrome_history_copy_{}", std::process::id()));
     std::fs::copy(&src, &tmp).map_err(|e| format!("History nicht kopierbar (Chrome läuft?): {e}"))?;
     let conn = rusqlite::Connection::open_with_flags(
         &tmp,
@@ -840,6 +853,10 @@ fn import_chrome_history(app: &App, dir: &std::path::Path) -> Result<usize, Stri
 }
 
 fn import_password_csv(app: &App, path: &str) -> Result<usize, String> {
+    // Eine Passwort-CSV ist Kilobytes gross, nicht Gigabytes.
+    if std::fs::metadata(path).map(|m| m.len() > 64 * 1024 * 1024).unwrap_or(false) {
+        return Err("Datei zu gross".into());
+    }
     let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let mut count = 0;
     for (i, line) in data.lines().enumerate() {

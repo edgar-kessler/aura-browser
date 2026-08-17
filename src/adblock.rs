@@ -614,6 +614,11 @@ fn is_procedural(sel: &str) -> bool {
         || sel.contains(":others(")
         || sel.starts_with('+')
         || sel.starts_with('^')
+        // Kein CSS ausserhalb der Regel: ein Selektor mit Klammern koennte
+        // "{display:none}" verlassen und eigene Regeln (url(...)) einschleusen.
+        || sel.contains('{')
+        || sel.contains('}')
+        || sel.contains('<')
 }
 
 /// Splits "pattern$opt,opt" — only when the tail really looks like an option list.
@@ -1404,6 +1409,8 @@ fn run_curl(url: &str, out: &std::path::Path) -> bool {
             "-sSL",
             "--max-time",
             "45",
+            "--max-filesize",
+            "52428800",
             "--retry",
             "1",
             "-A",

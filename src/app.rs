@@ -365,7 +365,11 @@ pub struct App {
 
 impl App {
     pub fn new() -> Result<Box<App>> {
-        let args: Vec<String> = std::env::args().collect();
+        // args_os: ein Dateiname mit kaputtem UTF-16 (über die Dateizuordnung
+        // hereingereicht) darf den Start nicht beenden.
+        let args: Vec<String> = std::env::args_os()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         let mut profile = "Default".to_string();
         let mut private = false;
         let mut start_url: Option<String> = None;
@@ -373,21 +377,35 @@ impl App {
         let mut i = 1;
         while i < args.len() {
             if let Some(p) = args[i].strip_prefix("--profile=") {
-                profile = p.to_string();
+                // Der Name wird ein Ordner unter %LOCALAPPDATA%\AuraBrowser –
+                // also nur Buchstaben, Ziffern, Strich, kein "..".
+                let clean: String = p
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                    .take(64)
+                    .collect();
+                if !clean.is_empty() {
+                    profile = clean;
+                }
             } else if args[i] == "--private" {
                 private = true;
                 profile = format!("__private_{}", std::process::id());
             } else if let Some(p) = args[i].strip_prefix("--debug-port=") {
-                debug_port = p.parse::<u16>().ok().or(Some(0));
+                // Nur eine echte Portnummer schaltet den Server ein.
+                debug_port = p.parse::<u16>().ok();
             } else if let Some(u) = args[i].strip_prefix("--url=") {
                 start_url = Some(u.to_string());
             } else if !args[i].starts_with("--") {
-                // Bare URL, e.g. when Windows hands us a link to open.
+                // Bare URL, e.g. when Windows hands us a link to open. Alles
+                // danach ist Teil davon, nie ein Schalter – so kann ein Link
+                // keine Schalter einschmuggeln.
                 start_url = Some(args[i].clone());
+                break;
             }
             i += 1;
         }
 
+        Storage::sweep_private_leftovers();
         let storage = Storage::open(&profile).map_err(|e| windows::core::Error::new(E_FAIL, e))?;
 
         let theme_mode = match storage.get_setting("theme", "system").as_str() {
@@ -3917,6 +3935,12 @@ impl App {
                 }
             }
             AppMsg::NewWindow { uri, user_initiated, tab } => {
+                // Ein neues Fenster öffnet der Host per Navigate – und das
+                // kennt Chromiums Regel nicht, dass Web-Inhalt kein file:,
+                // data: oder aura:// oben im Tab öffnen darf. Also hier.
+                if !web_may_open(&uri) {
+                    return;
+                }
                 // Popunders on streaming sites are click-triggered, so "user
                 // initiated" is not enough — check the target against the lists.
                 if crate::adblock::is_blocked_popup(tab, &uri) {
@@ -3971,7 +3995,7 @@ impl App {
                     p.close();
                 }
                 if let Some((args, deferral, kind, origin)) = self.pending_permission.take() {
-                    if remember {
+                    if remember && !self.private {
                         self.storage.set_permission(&origin, &kind, allow);
                     }
                     unsafe {
@@ -4144,7 +4168,9 @@ impl App {
         let Some(i) = self.tab_index_by_id(tab_id) else { return };
         let Ok(webview) = (unsafe { controller.CoreWebView2() }) else { return };
 
-        // Map aura.internal to the local assets folder.
+        // Map aura.internal to the local assets folder. DENY: fremde Seiten
+        // dürfen von dort nichts laden – kein iframe, kein Bild, kein fetch.
+        // Unsere Seiten selbst sind gleiche Herkunft und merken nichts.
         if let Ok(wv3) = webview.cast::<ICoreWebView2_3>() {
             let dir = crate::storage::assets_dir();
             let d = wide(&dir.to_string_lossy());
@@ -4152,7 +4178,7 @@ impl App {
                 let _ = wv3.SetVirtualHostNameToFolderMapping(
                     w!("aura.internal"),
                     PCWSTR(d.as_ptr()),
-                    COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW,
+                    COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY,
                 );
             }
         }
@@ -4199,15 +4225,9 @@ impl App {
         deferral: &ICoreWebView2Deferral,
         op: &ICoreWebView2DownloadOperation,
     ) {
-        let filename = uri
-            .rsplit('/')
-            .next()
-            .unwrap_or("download")
-            .split(['?', '#'])
-            .next()
-            .unwrap_or("download")
-            .to_string();
-        let filename = if filename.is_empty() { "download".into() } else { filename };
+        // Der Name kommt aus der Adresse – also von der Seite. Er darf den
+        // Download-Ordner nicht verlassen und nichts überschreiben.
+        let filename = safe_download_name(uri.split(['?', '#']).next().unwrap_or(""));
         let configured = self.storage.get_setting("download_dir", "");
         let dir = if configured.is_empty() {
             std::env::var("USERPROFILE")
@@ -4219,7 +4239,11 @@ impl App {
             std::path::PathBuf::from(configured)
         };
         let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join(&filename);
+        let path = unique_path(&dir, &filename);
+        let filename = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or(filename);
         let dl_id = self.storage.add_download(&path.to_string_lossy(), uri, &filename);
 
         // Track progress.
@@ -5387,6 +5411,11 @@ impl App {
         self.paint();
     }
 
+    /// Der Profilordner eines privaten Fensters – zum Aufraeumen nach dem Lauf.
+    pub fn private_data_dir(&self) -> Option<std::path::PathBuf> {
+        self.private.then(|| Storage::data_dir(&self.profile))
+    }
+
     fn shutdown(&mut self) {
         self.save_session();
         for tab in &self.tabs {
@@ -5598,6 +5627,72 @@ fn icon_font(gfx: &Gfx, size: f32) -> Result<IDWriteTextFormat> {
         let _ = fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         Ok(fmt)
     }
+}
+
+/// Darf eine Web-Seite diese Adresse in einem neuen Tab öffnen? Nur das
+/// Netz selbst und about:blank – kein file:, data:, blob:, javascript: und
+/// keine unserer eigenen Seiten.
+pub fn web_may_open(uri: &str) -> bool {
+    let low = uri.trim().to_ascii_lowercase();
+    low.starts_with("http://") || low.starts_with("https://") || low == "about:blank"
+}
+
+/// Macht aus dem, was eine URL als Dateinamen anbietet, einen Namen, der
+/// sicher in den Download-Ordner passt: nur der letzte Teil, keine
+/// Trennzeichen, keine Datenströme (`name:stream`), keine Gerätenamen wie
+/// CON oder NUL, keine Steuerzeichen, kein Punkt am Ende. Leer heisst
+/// "download".
+pub fn safe_download_name(raw: &str) -> String {
+    let decoded = crate::util::urldecode_lossy(raw);
+    let last = decoded
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    let mut name: String = last
+        .chars()
+        .map(|c| match c {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if (c as u32) < 32 || c == '\u{7f}' => '_',
+            c => c,
+        })
+        .collect();
+    let trimmed = name.trim_matches(|c: char| c == '.' || c == ' ').to_string();
+    name = if trimmed.is_empty() { "download".to_string() } else { trimmed };
+    if name.chars().count() > 150 {
+        name = name.chars().take(150).collect();
+    }
+    let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL"
+            | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
+            | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+    );
+    if reserved {
+        name.insert(0, '_');
+    }
+    name
+}
+
+/// Weicht auf `name (2).ext` aus, wenn es die Datei schon gibt – statt sie
+/// stumm zu überschreiben.
+pub fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.to_string(), String::new()),
+    };
+    for n in 2..1000 {
+        let p = dir.join(format!("{stem} ({n}){ext}"));
+        if !p.exists() {
+            return p;
+        }
+    }
+    first
 }
 
 pub fn parse_accent(s: &str) -> (u8, u8, u8) {

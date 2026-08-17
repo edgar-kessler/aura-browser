@@ -11,7 +11,9 @@
 // Netzwerk-Thread legt den Befehl deshalb ab, weckt das Fenster und wartet.
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -60,73 +62,116 @@ pub fn start(hwnd: isize, msg: u32, port: u16, profile_dir: &std::path::Path) ->
     let listener = TcpListener::bind(("127.0.0.1", port)).ok()?;
     let port = listener.local_addr().ok()?.port();
 
-    // Einfaches Token aus Zeit und Prozess-ID – es soll nur verhindern, dass
-    // eine andere lokale Anwendung zufällig mitsteuert.
-    let secret = format!(
-        "{:x}{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-        std::process::id()
-    );
+    // Das Token ist die einzige Schranke – jeder Prozess auf dem Rechner kommt
+    // an 127.0.0.1 heran. Deshalb 256 Bit aus dem System-Zufall, nicht Zeit
+    // und PID (beides ist erratbar).
+    let mut bytes = [0u8; 32];
+    unsafe {
+        use windows::Win32::Security::Cryptography::*;
+        if BCryptGenRandom(None, &mut bytes, BCRYPT_USE_SYSTEM_PREFERRED_RNG).is_err() {
+            return None;
+        }
+    }
+    let secret: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     let info = json!({ "port": port, "token": secret, "pid": std::process::id() });
     let _ = std::fs::write(profile_dir.join("devcontrol.json"), info.to_string());
 
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let secret = secret.clone();
-            std::thread::spawn(move || {
-                let _ = serve(stream, hwnd, msg, &secret);
-            });
+            let port = port;
+            // Ein Thread je Verbindung, aber nicht beliebig viele: die
+            // Anfragen laufen ohnehin nacheinander durch den UI-Thread.
+            if ACTIVE.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                ACTIVE.fetch_sub(1, Ordering::SeqCst);
+                let _ = respond(&stream, &Response::error(503, "zu viele Verbindungen"));
+                continue;
+            }
+            let spawned = std::thread::Builder::new()
+                .name("aura-devtools".into())
+                .spawn(move || {
+                    let _ = serve(stream, hwnd, msg, &secret, port);
+                    ACTIVE.fetch_sub(1, Ordering::SeqCst);
+                });
+            if spawned.is_err() {
+                ACTIVE.fetch_sub(1, Ordering::SeqCst);
+            }
         }
     });
     Some(port)
 }
 
-fn serve(mut stream: TcpStream, hwnd: isize, msg: u32, secret: &str) -> std::io::Result<()> {
-    let mut reader = BufReader::new(stream.try_clone()?);
+static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+const MAX_CONNECTIONS: usize = 16;
+/// Anfragen kommen von einem Skript nebenan; wer länger braucht, hängt.
+const IO_TIMEOUT: Duration = Duration::from_secs(10);
+/// Kopfzeilen zusammen höchstens so lang, Rumpf höchstens so groß.
+const MAX_HEAD: u64 = 16 * 1024;
+const MAX_BODY: usize = 1024 * 1024;
+
+fn serve(stream: TcpStream, hwnd: isize, msg: u32, secret: &str, port: u16) -> std::io::Result<()> {
+    let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+    // Der Kopf wird durch einen begrenzten Leser gezogen – eine endlose
+    // Kopfzeile kann so keinen Speicher fressen.
+    let mut reader = BufReader::new(stream.try_clone()?.take(MAX_HEAD));
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let mut parts = line.split_whitespace();
-    let _method = parts.next().unwrap_or("");
+    let method = parts.next().unwrap_or("").to_string();
     let target = parts.next().unwrap_or("/").to_string();
 
     let mut length = 0usize;
     let mut header_token = String::new();
-    loop {
+    let mut host_ok = false;
+    for _ in 0..64 {
         let mut h = String::new();
         if reader.read_line(&mut h)? == 0 || h.trim().is_empty() {
             break;
         }
         let lower = h.to_ascii_lowercase();
         if let Some(v) = lower.strip_prefix("content-length:") {
-            length = v.trim().parse().unwrap_or(0);
+            length = v.trim().parse().unwrap_or(usize::MAX);
         } else if lower.starts_with("x-aura-token:") {
             header_token = h[13..].trim().to_string();
+        } else if let Some(v) = lower.strip_prefix("host:") {
+            // Gegen DNS-Rebinding: Anfragen von einer Web-Seite tragen den
+            // Namen des Angreifers im Host – wir bedienen nur die eigene Adresse.
+            let v = v.trim();
+            host_ok = v == format!("127.0.0.1:{port}") || v == format!("localhost:{port}");
         }
     }
-    let mut raw = vec![0u8; length];
-    if length > 0 {
-        reader.read_exact(&mut raw)?;
-    }
 
-    let (path, query) = split_target(&target);
-    let query_token = query
-        .iter()
-        .find(|(k, _)| k == "token")
-        .map(|(_, v)| v.clone())
-        .unwrap_or_default();
-
-    let response = if header_token != secret && query_token != secret {
+    // Erst prüfen, dann lesen: ohne Token wird kein Rumpf angenommen, und
+    // gross darf er auch nicht sein.
+    let response = if !host_ok {
+        Response::error(403, "falscher Host")
+    } else if !constant_time_eq(header_token.as_bytes(), secret.as_bytes()) {
         Response::error(403, "falsches oder fehlendes Token")
+    } else if length > MAX_BODY {
+        Response::error(413, "Anfrage zu gross")
     } else {
-        let body = serde_json::from_slice(&raw).unwrap_or(Value::Null);
-        dispatch(Request { path, query, body }, hwnd, msg)
+        let mut raw = vec![0u8; length];
+        if length > 0 {
+            reader.get_mut().set_limit(length as u64);
+            reader.read_exact(&mut raw)?;
+        }
+        let (path, query) = split_target(&target);
+        // Alles, was den Zustand ändert, nur per POST – ein <img src> oder
+        // Link aus einer Seite soll nichts auslösen können.
+        if method != "POST" && path != "/state" {
+            Response::error(405, "nur POST")
+        } else {
+            let body = serde_json::from_slice(&raw).unwrap_or(Value::Null);
+            dispatch(Request { path, query, body }, hwnd, msg)
+        }
     };
+    respond(&stream, &response)
+}
 
+fn respond(mut stream: &TcpStream, response: &Response) -> std::io::Result<()> {
     let head = format!(
-        "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         response.status,
         response.content_type,
         response.body.len()
@@ -134,6 +179,15 @@ fn serve(mut stream: TcpStream, hwnd: isize, msg: u32, secret: &str) -> std::io:
     stream.write_all(head.as_bytes())?;
     stream.write_all(&response.body)?;
     stream.flush()
+}
+
+/// Vergleich ohne frühen Abbruch – die Dauer verrät nichts über die Stelle,
+/// an der es nicht mehr passt.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 fn split_target(target: &str) -> (String, Vec<(String, String)>) {
