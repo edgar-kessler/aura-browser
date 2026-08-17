@@ -71,6 +71,11 @@ const SB_SNAP: f32 = 150.0;
 const SB_GRIP: f32 = 5.0;
 const CAP_W: f32 = 40.0;
 const CAP_H: f32 = 34.0;
+/// Lesezeichenleiste unter der Werkzeugzeile: Höhe der Leiste und der Chips.
+const BB_H: f32 = 34.0;
+const BB_CHIP_H: f32 = 26.0;
+/// Längster Titel eines Chips (DIP), danach Auslassungspunkte.
+const BB_TITLE_MAX: f32 = 140.0;
 
 /// Bewegung. Federn geben eine Schwingungsdauer in Sekunden und ein
 /// Dämpfungsmaß an; alles unter 1 federt sichtbar nach.
@@ -197,6 +202,20 @@ pub enum Hot {
     TabClose(usize),
     /// Der Greifstreifen an der rechten Kante der Seitenleiste.
     SbEdge,
+    /// Ein Chip in der Lesezeichenleiste (Index in `bb_items`).
+    Bookmark(usize),
+}
+
+/// Ein Eintrag der Lesezeichenleiste, samt fertig gemessener Titelbreite und
+/// (sobald einmal gemalt) dem Symbol als Bitmap.
+pub struct BbItem {
+    pub id: i64,
+    pub title: String,
+    pub url: String,
+    pub favicon_png: Option<Vec<u8>>,
+    pub favicon: Option<ID2D1Bitmap>,
+    /// Breite des Titels in DIP, auf BB_TITLE_MAX gedeckelt.
+    pub title_w: f32,
 }
 
 #[derive(Default)]
@@ -221,6 +240,10 @@ pub struct Layout {
     pub tab_view: D2D_RECT_F,
     /// Greifstreifen an der rechten Kante der Seitenleiste.
     pub sb_edge: D2D_RECT_F,
+    /// Chips der Lesezeichenleiste: (Index in `bb_items`, Rechteck).
+    pub bookmarks: Vec<(usize, D2D_RECT_F)>,
+    /// Die ganze Lesezeichenleiste (leer, wenn ausgeblendet).
+    pub bb_bar: D2D_RECT_F,
     pub content: RECT, // physical px
 }
 
@@ -248,6 +271,14 @@ pub struct App {
     backdrop_kind: i32,
     /// Ein Bild ist angefordert und WM_PAINT unterwegs.
     paint_pending: bool,
+    /// Messwerte fürs Nachstellen von Rucklern: letztes SetBounds der Seite,
+    /// letztes Bild (Millisekunden).
+    bounds_ms: f32,
+    paint_ms: f32,
+    /// Ablaufspur der letzten WM_SIZE: (ms seit Start, Breite, Höhe, Dauer
+    /// gesamt, davon Bild, davon Layout samt Seite, in der Größenschleife?).
+    size_trace: std::collections::VecDeque<(f32, i32, i32, f32, f32, f32, bool)>,
+    size_trace_t0: std::time::Instant,
     /// Bildtakt für Animationen.
     frame: crate::gfx::FrameClock,
     /// Wenn WinRT das liefert: Beobachter für „Transparenzeffekte“.
@@ -279,11 +310,26 @@ pub struct App {
     /// Setzt `relayout` aus, die Seite neu einzupassen — siehe
     /// `follow_content_edge`.
     hold_webviews: bool,
-    /// Der Nutzer zieht gerade am Fensterrand (WM_ENTERSIZEMOVE).
+    /// Der Nutzer zieht gerade am Fensterrand (WM_ENTERSIZEMOVE oder unsere
+    /// eigene Schleife).
     in_size_move: bool,
+    /// Zeigt Windows den Fensterinhalt beim Ziehen (SPI_GETDRAGFULLWINDOWS)?
+    /// Wenn nicht, liefert die Größenschleife des Systems während des Ziehens
+    /// kein einziges WM_SIZE — das Fenster springt erst beim Loslassen. Dann
+    /// übernehmen wir auch das Verschieben selbst.
+    drag_full: bool,
+    /// Eigene Größen-/Verschiebeschleife: Griff (HT-Code), Zeiger und
+    /// Fensterrechteck zu Beginn.
+    win_drag: Option<(u32, POINT, RECT)>,
     /// Tabs oben wie bei Chrome statt in der Seitenleiste (Einstellung
     /// `tab_layout` = "top").
     pub top_tabs: bool,
+    /// Lesezeichenleiste unter der Werkzeugzeile (Einstellung `bookmarks_bar`).
+    pub bb_on: bool,
+    /// Die Einträge der Leiste (Lesezeichen der obersten Ebene, keine Ordner).
+    pub bb_items: Vec<BbItem>,
+    /// Lesezeichen haben sich geändert — Leiste vor dem nächsten Layout neu laden.
+    bb_dirty: bool,
     /// Das Adressfeld — selbst gezeichnet, siehe crate::textfield.
     pub omni: crate::textfield::TextField,
     /// Läuft gerade eine Auswahl mit gedrückter Maustaste im Adressfeld?
@@ -398,6 +444,7 @@ impl App {
         let (dr, dg, db) = crate::theme::ACCENT_DEFAULT;
         let accent = parse_accent(&storage.get_setting("accent", &format!("{dr},{dg},{db}")));
         let top_tabs = storage.get_setting("tab_layout", "side") == "top";
+        let bb_on = storage.get_setting("bookmarks_bar", "1") == "1";
         let reduce_motion = storage.get_setting("reduce_motion", "0") == "1";
         let theme = Theme::new(theme_mode, accent, reduce_motion);
 
@@ -539,6 +586,10 @@ impl App {
             backdrop_ok,
             backdrop_kind,
             paint_pending: false,
+            bounds_ms: 0.0,
+            paint_ms: 0.0,
+            size_trace: std::collections::VecDeque::new(),
+            size_trace_t0: std::time::Instant::now(),
             frame,
             effects_watch: None,
             scale,
@@ -560,7 +611,12 @@ impl App {
             sb_push_gap: 16,
             hold_webviews: false,
             in_size_move: false,
+            drag_full: drag_full_windows(),
+            win_drag: None,
             top_tabs,
+            bb_on,
+            bb_items: Vec::new(),
+            bb_dirty: true,
             omni: crate::textfield::TextField::new(),
             omni_drag: false,
             sb_spring: crate::anim::Spring::new(SB_COLLAPSED, SPRING_SIDEBAR.0, SPRING_SIDEBAR.1),
@@ -810,6 +866,19 @@ impl App {
                     return LRESULT(0);
                 }
                 WM_NCHITTEST => return self.hit_test_nchittest(hwnd, l),
+                WM_NCLBUTTONDOWN => {
+                    // Größe ändern immer selbst (live, in unserem Takt);
+                    // Verschieben nur dann selbst, wenn Windows den Inhalt beim
+                    // Ziehen nicht zeigen würde — sonst behält das System die
+                    // Schleife samt Andocken an den Bildschirmrändern.
+                    let ht = w.0 as u32;
+                    let sizing = (HTLEFT..=HTBOTTOMRIGHT).contains(&ht);
+                    if sizing || (ht == HTCAPTION && !self.drag_full) {
+                        self.begin_win_drag(ht);
+                        return LRESULT(0);
+                    }
+                    return DefWindowProcW(hwnd, msg, w, l);
+                }
                 WM_ERASEBKGND => return LRESULT(1),
                 WM_PAINT => {
                     // Hier landen alle gesammelten Bitten um ein Bild (`paint`).
@@ -842,6 +911,7 @@ impl App {
                     if w.0 == SIZE_MINIMIZED as usize {
                         return LRESULT(0);
                     }
+                    let t_size = std::time::Instant::now();
                     let rc = client_rect(hwnd);
                     if let Some(rt) = &self.rt {
                         let _ = rt.Resize(&D2D_SIZE_U {
@@ -850,9 +920,11 @@ impl App {
                         });
                     }
                     let scale = self.scale;
+                    let hint = monitor_size(hwnd);
                     if let Some(c) = self.comp.as_mut() {
-                        c.resize(rc.right as u32, rc.bottom as u32, scale);
+                        c.resize(rc.right as u32, rc.bottom as u32, hint, scale);
                     }
+                    let t_layout = std::time::Instant::now();
                     // Beim Ziehen am Fensterrand wird die eigene Oberfläche
                     // jedes Mal neu vermessen, die Seite aber nur im gemessenen
                     // Takt — jedes SetBounds ist ein voller Neuaufbau der Seite,
@@ -862,11 +934,20 @@ impl App {
                     } else {
                         self.relayout();
                     }
+                    let layout_ms = t_layout.elapsed().as_secs_f32() * 1000.0;
                     // Das Bild sofort und im Gleichschritt mit dem Rahmen: erst
                     // wenn der DWM es übernommen hat, geht es zurück in die
                     // Größenschleife. Sonst hinkt die Fläche dem Rahmen nach.
                     self.paint_now(true);
                     let _ = ValidateRect(Some(hwnd), None);
+                    {
+                        let total = t_size.elapsed().as_secs_f32() * 1000.0;
+                        let at = self.size_trace_t0.elapsed().as_secs_f32() * 1000.0;
+                        if self.size_trace.len() >= 64 {
+                            self.size_trace.pop_front();
+                        }
+                        self.size_trace.push_back((at, rc.right, rc.bottom, total, self.paint_ms, layout_ms, self.in_size_move));
+                    }
                     return LRESULT(0);
                 }
                 WM_DPICHANGED => {
@@ -888,6 +969,15 @@ impl App {
                 WM_MOUSELEAVE => {
                     self.set_hot(Hot::None);
                     self.hide_tooltip();
+                    return LRESULT(0);
+                }
+                WM_KILLFOCUS => {
+                    // Der Fokus geht woandershin — meist in die Seite, weil der
+                    // Nutzer hineingeklickt hat. Dann ist die Eingabe in der
+                    // Adressleiste vorbei: Vorschläge zu, Adresse wieder da.
+                    if self.editing {
+                        self.end_edit(false);
+                    }
                     return LRESULT(0);
                 }
                 WM_ACTIVATEAPP => {
@@ -913,6 +1003,10 @@ impl App {
                     return LRESULT(0);
                 }
                 WM_LBUTTONUP => {
+                    if self.win_drag.is_some() {
+                        self.end_win_drag(false);
+                        return LRESULT(0);
+                    }
                     self.mouse_up(x_lparam(l) as f32 / self.scale, y_lparam(l) as f32 / self.scale);
                     return LRESULT(0);
                 }
@@ -921,6 +1015,9 @@ impl App {
                     // enden, also ist er vorbei.
                     self.sb_drag = None;
                     self.mouse_captured = false;
+                    if self.win_drag.is_some() {
+                        self.end_win_drag(false);
+                    }
                     if self.pressed != Hot::None {
                         self.pressed = Hot::None;
                         self.start_anim();
@@ -929,6 +1026,18 @@ impl App {
                     return LRESULT(0);
                 }
                 WM_SETCURSOR => {
+                    // Während unserer Größenschleife den passenden Pfeil halten.
+                    if let Some((ht, _, _)) = self.win_drag {
+                        let id = match ht {
+                            HTLEFT | HTRIGHT => IDC_SIZEWE,
+                            HTTOP | HTBOTTOM => IDC_SIZENS,
+                            HTTOPLEFT | HTBOTTOMRIGHT => IDC_SIZENWSE,
+                            HTTOPRIGHT | HTBOTTOMLEFT => IDC_SIZENESW,
+                            _ => IDC_ARROW,
+                        };
+                        let _ = SetCursor(LoadCursorW(None, id).ok());
+                        return LRESULT(1);
+                    }
                     // Waagerechter Pfeil über dem Greifstreifen – ohne ihn ist
                     // nicht zu erkennen, dass sich hier etwas ziehen lässt.
                     if (l.0 as u32 & 0xFFFF) == HTCLIENT as u32
@@ -944,8 +1053,16 @@ impl App {
                     return LRESULT(0);
                 }
                 WM_MBUTTONUP => {
-                    if let Hot::Tab(i) = self.hot {
-                        self.close_tab(i);
+                    match self.hot {
+                        Hot::Tab(i) => self.close_tab(i),
+                        // Mittelklick auf ein Lesezeichen: im Hintergrund öffnen.
+                        Hot::Bookmark(i) => {
+                            if let Some(it) = self.bb_items.get(i) {
+                                let url = it.url.clone();
+                                self.new_tab(&url, false);
+                            }
+                        }
+                        _ => {}
                     }
                     return LRESULT(0);
                 }
@@ -961,7 +1078,7 @@ impl App {
                     } else if hot == Hot::Omnibox {
                         // Der erste Klick hat das Feld schon geöffnet und alles
                         // markiert — dabei bleibt es.
-                    } else if hot == Hot::None && yd < self.top_h() && (self.top_tabs || xd >= self.sidebar_w) {
+                    } else if hot == Hot::None && yd < self.bar_h() && (self.top_tabs || xd >= self.sidebar_w) {
                         // Double-click on empty chrome toggles maximize, like a titlebar.
                         let cmd = if IsZoomed(hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE };
                         let _ = ShowWindow(hwnd, cmd);
@@ -1028,6 +1145,12 @@ impl App {
                     return LRESULT(self.edit_brush.0 as isize);
                 }
                 WM_KEYDOWN | WM_SYSKEYDOWN => {
+                    // Escape bricht unsere Größenschleife ab: das Fenster
+                    // springt auf sein Ausgangsmaß zurück.
+                    if self.win_drag.is_some() && w.0 as u32 == 0x1B {
+                        self.end_win_drag(true);
+                        return LRESULT(0);
+                    }
                     let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
                     let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
                     let alt = GetKeyState(VK_MENU.0 as i32) < 0;
@@ -1098,6 +1221,7 @@ impl App {
                     if self.theme_mode == ThemeMode::System {
                         self.apply_theme(ThemeMode::System);
                     }
+                    self.drag_full = drag_full_windows();
                     // „Transparenzeffekte“ könnten gerade umgeschaltet worden
                     // sein — dann muss die Fläche deckend werden (oder darf
                     // wieder durchscheinen).
@@ -1163,10 +1287,11 @@ impl App {
                 return LRESULT(code as isize);
             }
         }
-        // Caption area: topbar, but not over interactive elements.
+        // Caption area: topbar, but not over interactive elements. Die
+        // Lesezeichenleiste darunter gehört nicht dazu.
         let xd = x as f32 / self.scale;
         let yd = y as f32 / self.scale;
-        if yd < self.top_h() && (self.top_tabs || xd >= self.sidebar_w) {
+        if yd < self.bar_h() && (self.top_tabs || xd >= self.sidebar_w) {
             let hot = self.hit(xd, yd);
             if hot == Hot::None {
                 return LRESULT(HTCAPTION as isize);
@@ -1175,9 +1300,154 @@ impl App {
         LRESULT(HTCLIENT as isize)
     }
 
-    /// Höhe der Kopffläche: eine Zeile im Seitenmodus, zwei im Top-Modus.
-    fn top_h(&self) -> f32 {
+    /// Höhe der Werkzeugfläche: eine Zeile im Seitenmodus, zwei im Top-Modus.
+    /// Das ist der Bereich, der sich wie eine Titelleiste anfasst.
+    fn bar_h(&self) -> f32 {
         if self.top_tabs { TS_H + TOOL_H } else { TOPBAR_H }
+    }
+
+    /// Ist die Lesezeichenleiste gerade zu sehen?
+    fn bb_visible(&self) -> bool {
+        self.bb_on && !self.fs_element
+    }
+
+    /// Höhe der ganzen Kopffläche bis zur Seite: Werkzeugfläche plus
+    /// Lesezeichenleiste.
+    fn top_h(&self) -> f32 {
+        self.bar_h() + if self.bb_visible() { BB_H } else { 0.0 }
+    }
+
+    /// Lädt die Einträge der Lesezeichenleiste neu: Lesezeichen der obersten
+    /// Ebene, dazu der Inhalt eines Ordners, der wie eine Lesezeichenleiste
+    /// heißt (so kommt Chromes Leiste aus dem Import an).
+    pub fn reload_bookmarks_bar(&mut self) {
+        self.bb_dirty = false;
+        let all = self.storage.all_bookmarks();
+        let bar_folders: Vec<i64> = all
+            .iter()
+            .filter(|b| b.is_folder && b.parent == 0)
+            .filter(|b| {
+                let t = b.title.trim().to_lowercase();
+                t == "lesezeichenleiste" || t == "bookmarks bar" || t == "bookmark bar" || t == "favoritenleiste"
+            })
+            .map(|b| b.id)
+            .collect();
+        let mut items: Vec<BbItem> = Vec::new();
+        for b in all.into_iter().filter(|b| !b.is_folder && (b.parent == 0 || bar_folders.contains(&b.parent))) {
+            let title = if b.title.trim().is_empty() { host_of(&b.url) } else { b.title.clone() };
+            let title_w = self.gfx.text_width(&self.fmt_ui, &title, BB_TITLE_MAX);
+            // Bitmaps behalten, wenn der Eintrag schon da war — Dekodieren kostet.
+            let favicon = self.bb_items.iter().find(|o| o.id == b.id).and_then(|o| o.favicon.clone());
+            items.push(BbItem { id: b.id, title, url: b.url, favicon_png: b.favicon, favicon, title_w });
+        }
+        self.bb_items = items;
+    }
+
+    /// Lesezeichen haben sich geändert (Stern, Seite, Import).
+    pub fn bookmarks_changed(&mut self) {
+        self.bb_dirty = true;
+        self.relayout();
+        self.paint();
+    }
+
+    /// Lesezeichenleiste an/aus (Einstellung `bookmarks_bar`).
+    pub fn set_bookmarks_bar(&mut self, on: bool) {
+        self.bb_on = on;
+        self.relayout();
+        self.paint();
+    }
+
+    /// Chips der Lesezeichenleiste anordnen: von links, bis der Platz aus ist.
+    fn layout_bookmarks(&mut self, l: &mut Layout, w: f32) {
+        l.bookmarks.clear();
+        l.bb_bar = D2D_RECT_F::default();
+        if !self.bb_visible() {
+            return;
+        }
+        if self.bb_dirty {
+            self.reload_bookmarks_bar();
+        }
+        let left = if self.top_tabs { 0.0 } else { self.sidebar_w };
+        let y0 = self.bar_h();
+        l.bb_bar = rect_f(left, y0, (w - left).max(0.0), BB_H);
+        let mut x = left + 8.0;
+        let cy = y0 + (BB_H - BB_CHIP_H) / 2.0;
+        for (i, it) in self.bb_items.iter().enumerate() {
+            let cw = 10.0 + 16.0 + 6.0 + it.title_w + 10.0;
+            if x + cw > w - 8.0 {
+                break;
+            }
+            l.bookmarks.push((i, rect_f(x, cy, cw, BB_CHIP_H)));
+            x += cw + 2.0;
+        }
+    }
+
+    /// Malt die Lesezeichenleiste: Chips mit Symbol und Titel, berührt und
+    /// gedrückt wie alle anderen Knöpfe.
+    fn paint_bookmarks_bar(&mut self, rt: &ID2D1RenderTarget, theme: &Theme) {
+        if !self.bb_visible() {
+            return;
+        }
+        // Symbole nachdekodieren (braucht &mut).
+        for i in 0..self.bb_items.len() {
+            if self.bb_items[i].favicon.is_some() {
+                continue;
+            }
+            let Some(png) = self.bb_items[i].favicon_png.clone() else { continue };
+            if let Ok(bmp) = self.gfx.bitmap_from_bytes(rt, &png) {
+                self.bb_items[i].favicon = Some(bmp);
+            }
+        }
+        unsafe {
+            let bar = self.layout.bb_bar;
+            if self.layout.bookmarks.is_empty() {
+                // Leere Leiste: ein leiser Hinweis, wie man sie füllt.
+                if let Ok(b) = brush(rt, theme.text_dim) {
+                    let t: Vec<u16> = "Lesezeichen mit ☆ speichern — sie erscheinen hier".encode_utf16().collect();
+                    self.fmt_small.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
+                    self.fmt_small.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
+                    rt.DrawText(&t, &self.fmt_small, &rect_f(bar.left + 14.0, bar.top, (bar.right - bar.left - 28.0).max(1.0), bar.bottom - bar.top), &b, D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
+                }
+                return;
+            }
+            for (i, r) in self.layout.bookmarks.clone() {
+                let it = &self.bb_items[i];
+                let ht = self.hover_t(Hot::Bookmark(i));
+                let pt_ = self.press_t(Hot::Bookmark(i));
+                if ht > 0.0 {
+                    if let Ok(b) = brush(rt, theme.hover_at(ht)) {
+                        rt.FillRoundedRectangle(&rounded(r, R_SM), &b);
+                    }
+                }
+                if pt_ > 0.0 {
+                    if let Ok(b) = brush(rt, theme.press_at(pt_)) {
+                        rt.FillRoundedRectangle(&rounded(r, R_SM), &b);
+                    }
+                }
+                let icon = rect_f(r.left + 10.0, (r.top + r.bottom) / 2.0 - 8.0, 16.0, 16.0);
+                if let Some(bmp) = &it.favicon {
+                    rt.DrawBitmap(bmp, Some(&icon), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
+                } else if let Ok(b) = brush(rt, theme.text_dim) {
+                    let g: Vec<u16> = "\u{E774}".encode_utf16().collect();
+                    self.fmt_icon_sm.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).ok();
+                    self.fmt_icon_sm.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
+                    rt.DrawText(&g, &self.fmt_icon_sm, &icon, &b, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                }
+                if let Ok(b) = brush(rt, theme.text) {
+                    let t: Vec<u16> = it.title.encode_utf16().collect();
+                    self.fmt_ui.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
+                    self.fmt_ui.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
+                    rt.DrawText(
+                        &t,
+                        &self.fmt_ui,
+                        &rect_f(r.left + 32.0, r.top, (r.right - r.left - 42.0).max(1.0), r.bottom - r.top),
+                        &b,
+                        D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
+            }
+        }
     }
 
     /// Linke Kante des Inhalts. Im Top-Modus gibt es keine Seitenleiste.
@@ -1367,6 +1637,7 @@ impl App {
     /// Gemeinsamer Schluss beider Layouts: Inhaltsbereich, Markenfeder,
     /// Eingabefelder, Seitengeometrie.
     fn finish_layout(&mut self, rc: RECT, mut l: Layout) {
+        self.layout_bookmarks(&mut l, rc.right as f32 / self.scale);
         let cx = (self.content_left_eff() * self.scale).round() as i32;
         let cy = (self.top_h() * self.scale).round() as i32;
         l.content = if self.fs_element {
@@ -1465,7 +1736,9 @@ impl App {
             unsafe {
                 // Skip redundant SetBounds: every call reflows the page.
                 if tab.last_bounds != Some(rect) {
+                    let t0 = std::time::Instant::now();
                     let _ = ctl.SetBounds(rect);
+                    self.bounds_ms = t0.elapsed().as_secs_f32() * 1000.0;
                     tab.last_bounds = Some(rect);
                     reclip = true;
                 }
@@ -1500,7 +1773,15 @@ impl App {
                 let mut cls = [0u16; 64];
                 let n = GetClassNameW(child, &mut cls) as usize;
                 if String::from_utf16_lossy(&cls[..n]).starts_with("Chrome_WidgetWin") {
-                    SetWindowRgn(child, None, true);
+                    // Nur wenn wirklich eine Region gesetzt ist — und ohne
+                    // erzwungenes Neuzeichnen: das ginge synchron in den
+                    // Browserprozess und kostete bei jedem Ziehschritt Zeit.
+                    let probe = CreateRectRgn(0, 0, 0, 0);
+                    let kind = GetWindowRgn(child, probe);
+                    let _ = DeleteObject(HGDIOBJ(probe.0));
+                    if kind != RGN_ERROR {
+                        SetWindowRgn(child, None, false);
+                    }
                 }
             }
             BOOL(1)
@@ -1541,23 +1822,30 @@ impl App {
             if !self.ensure_composition() {
                 return;
             }
-            let Some(c) = self.comp.as_ref() else { return };
+            let plate = self.theme.bg;
+            let Some(c) = self.comp.as_mut() else { return };
             if !c.alive() {
                 self.on_device_lost();
                 return;
             }
+            // Die Grundplatte trägt die Fensterfarbe (ändert sich nur mit dem
+            // Thema; der Vergleich drinnen macht das billig).
+            c.set_plate_color(plate);
+            let Some(c) = self.comp.as_ref() else { return };
             if let Err(e) = c.begin() {
                 // GetBuffer scheitert nur, wenn das Gerät weg ist.
                 let _ = e;
                 self.on_device_lost();
                 return;
             }
+            let t0 = std::time::Instant::now();
             let rt = c.target();
             self.paint_chrome(&rt);
             let result = match self.comp.as_mut() {
                 Some(c) => c.end(sync),
                 None => crate::gfx::Frame::Ok,
             };
+            self.paint_ms = t0.elapsed().as_secs_f32() * 1000.0;
             if result == crate::gfx::Frame::DeviceLost {
                 self.on_device_lost();
             }
@@ -1608,13 +1896,17 @@ impl App {
                 return false;
             }
         }
+        // Die Kette gleich in Monitorgröße anlegen: beim Ziehen am Rand muss
+        // sie dann nie umgebaut werden, und der freigelegte Streifen ist schon
+        // bemalt (siehe gfx::Composition).
         let rc = client_rect(self.hwnd);
+        let (mw, mh) = monitor_size(self.hwnd);
         if let Some(dev) = &self.comp_dev {
             self.comp = self.gfx.create_composition(
                 dev,
                 self.hwnd,
-                rc.right as u32,
-                rc.bottom as u32,
+                (rc.right as u32).max(mw),
+                (rc.bottom as u32).max(mh),
                 self.scale,
             );
         }
@@ -1658,47 +1950,61 @@ impl App {
         let h = rc.bottom as f32 / self.scale;
         let top = self.top_h();
         let sw = if self.top_tabs { 0.0 } else { self.sidebar_w };
+        // Die Malfläche reicht über das Fenster hinaus (Überschuss, siehe
+        // gfx::Composition). Flächen werden bis dorthin gefüllt, damit ein
+        // wachsendes Fenster nie in Unbemaltes hineinläuft; die Elemente
+        // selbst sitzen nach dem Fenstermaß.
+        let (cw, chh) = self.comp.as_ref().map(|c| c.canvas_dip()).unwrap_or((w, h));
+        let (cw, chh) = (cw.max(w), chh.max(h));
+        let plate = self.comp.as_ref().map(|c| c.has_plate()).unwrap_or(false);
         unsafe {
-            // Grundierung. Unsere Fläche liegt *unter* der Seite (siehe
-            // gfx::Composition): wo die Seite steht, verdeckt sie das; wo sie
-            // fehlt — Tab wechselt gerade, Fenster wächst, Leiste wird
-            // gezogen, Ansicht startet noch — sieht man diese Farbe statt des
-            // Schreibtischs. Bei Glas ist sie durchscheinend, dann kommt der
-            // Systemhintergrund durch. Jede Fläche genau einmal, sonst
-            // addieren sich die Alphawerte.
+            // Unsere Fläche liegt *über* der Seite: der Inhaltsbereich bleibt
+            // durchsichtig, damit die Seite durchkommt. Hinter allem liegt die
+            // Grundplatte in Fensterfarbe (gfx::Composition) — wo die Seite
+            // fehlt, sieht man die, nicht den Schreibtisch. Jede Fläche genau
+            // einmal füllen, sonst addieren sich die Alphawerte des Glases.
             rt.Clear(None);
 
-            // ---- topbar ----
+            // ---- topbar (bis zum Rand der Malfläche) ----
             if let Ok(b) = brush(rt, theme.bg_top) {
-                rt.FillRectangle(&rect_f(sw, 0.0, w - sw, top), &b);
+                rt.FillRectangle(&rect_f(sw, 0.0, cw - sw, top), &b);
             }
 
-            // ---- sidebar ----
+            // ---- sidebar (bis unten durch) ----
             if !self.top_tabs {
                 if let Ok(b) = brush(rt, theme.sidebar_bg) {
-                    rt.FillRectangle(&rect_f(0.0, 0.0, sw, h), &b);
+                    rt.FillRectangle(&rect_f(0.0, 0.0, sw, chh), &b);
                 }
             }
 
-            // ---- Inhaltsbereich (unter der Seite) ----
-            if let Ok(b) = brush(rt, theme.bg) {
-                rt.FillRectangle(&rect_f(sw, top, w - sw, h - top), &b);
+            // ---- Inhaltsbereich ----
+            // Ohne Grundplatte (sollte es nicht geben) wenigstens den Fall
+            // abdecken, in dem noch keine Seite steht: dann füllt die
+            // Oberfläche selbst — sonst wäre dort ein Loch bis zum Schreibtisch.
+            if !plate {
+                let waiting = self.tabs.get(self.active).map(|t| !t.painted).unwrap_or(true);
+                if waiting {
+                    if let Ok(b) = brush(rt, theme.bg) {
+                        rt.FillRectangle(&rect_f(sw, top, cw - sw, chh - top), &b);
+                    }
+                }
             }
 
-            // ---- separators ----
+            // ---- separators (ebenfalls bis zum Rand der Malfläche) ----
             if let Ok(b) = brush(rt, theme.border) {
                 if !self.top_tabs {
-                    rt.FillRectangle(&rect_f(sw - 1.0, 0.0, 1.0, h), &b);
+                    rt.FillRectangle(&rect_f(sw - 1.0, 0.0, 1.0, chh), &b);
                 }
                 if !self.fs_element {
                     let cl = self.content_left_eff().min(sw);
-                    rt.FillRectangle(&rect_f(cl, top - 1.0, w - cl, 1.0), &b);
+                    rt.FillRectangle(&rect_f(cl, top - 1.0, cw - cl, 1.0), &b);
                 }
             }
             self.paint_progress(rt, &theme, w, sw);
 
             self.paint_nav(rt, &theme);
             self.paint_omnibox(rt, &theme);
+            self.paint_bookmarks_bar(rt, &theme);
             self.paint_caption(rt, &theme, w);
             if self.top_tabs {
                 self.paint_topstrip(rt, &theme, w);
@@ -2596,6 +2902,11 @@ impl App {
             if inside(&l.gear) { return Hot::Gear; }
         }
         if inside(&l.plus) { return Hot::Plus; }
+        for (i, r) in &l.bookmarks {
+            if inside(r) {
+                return Hot::Bookmark(*i);
+            }
+        }
         for (i, r) in &l.tab_close {
             if inside(r) && self.hot == Hot::Tab(*i) {
                 return Hot::TabClose(*i);
@@ -2732,6 +3043,10 @@ impl App {
     }
 
     fn on_mouse_move(&mut self, x: f32, y: f32) {
+        if self.win_drag.is_some() {
+            self.drag_win_to(cursor_pos());
+            return;
+        }
         if self.sb_drag.is_some() {
             self.drag_sidebar(x);
             return;
@@ -2843,6 +3158,19 @@ impl App {
             Hot::Gear => self.open_internal("aura://settings"),
             Hot::Tab(i) => self.activate_tab(i),
             Hot::TabClose(i) => self.close_tab(i),
+            Hot::Bookmark(i) => {
+                // Strg+Klick öffnet im neuen Tab, wie in jedem Browser.
+                if let Some(it) = self.bb_items.get(i) {
+                    let url = it.url.clone();
+                    let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 };
+                    if ctrl {
+                        self.new_tab(&url, false);
+                    } else {
+                        let idx = self.active;
+                        self.navigate(idx, &url);
+                    }
+                }
+            }
             Hot::None => {
                 if self.editing {
                     self.end_edit(false);
@@ -2852,8 +3180,20 @@ impl App {
     }
 
     fn on_right_click(&mut self, x: f32, y: f32) {
-        if let Hot::Tab(i) = self.hit(x, y) {
-            self.show_tab_menu(i);
+        match self.hit(x, y) {
+            Hot::Tab(i) => self.show_tab_menu(i),
+            Hot::Bookmark(i) => {
+                let Some(it) = self.bb_items.get(i) else { return };
+                let items = vec![
+                    MenuItem::new("In neuem Tab öffnen", "E8A7", &format!("bmopen:{}", it.id)),
+                    MenuItem::new("Adresse kopieren", "E8C8", &format!("bmcopy:{}", it.id)),
+                    MenuItem::sep(),
+                    MenuItem::new("Aus Lesezeichen entfernen", "E74D", &format!("bmremove:{}", it.id)),
+                ];
+                let p = cursor_pos();
+                popup::show_menu(self, p.x, p.y, items);
+            }
+            _ => {}
         }
     }
 
@@ -2938,6 +3278,136 @@ impl App {
         self.storage
             .set_setting("sidebar_open", if self.expanded { "1" } else { "0" });
         self.relayout();
+        self.paint();
+    }
+
+    // ---------------- Fenster ziehen (eigene Schleife) ----------------
+    /// Beginnt das Ziehen am Rand (`ht` = HTLEFT…HTBOTTOMRIGHT) oder an der
+    /// Kopfzeile (HTCAPTION). Wir fangen die Maus und setzen das Fenster bei
+    /// jeder Bewegung selbst — live, auch wenn Windows „Fensterinhalt beim
+    /// Ziehen anzeigen“ abgeschaltet hat (dann liefert die Schleife des
+    /// Systems bis zum Loslassen kein WM_SIZE, das Fenster springt am Ende).
+    fn begin_win_drag(&mut self, ht: u32) {
+        let mut pt = cursor_pos();
+        let mut r = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(self.hwnd, &mut r);
+        }
+        if ht == HTCAPTION && unsafe { IsZoomed(self.hwnd) }.as_bool() {
+            // Aus dem Vollformat herausziehen: erst wiederherstellen, dann so
+            // unter den Zeiger legen, dass er anteilig an derselben Stelle der
+            // Kopfzeile bleibt — wie Windows selbst.
+            let old_w = (r.right - r.left).max(1);
+            let frac = (pt.x - r.left) as f32 / old_w as f32;
+            unsafe {
+                let _ = ShowWindow(self.hwnd, SW_RESTORE);
+                let _ = GetWindowRect(self.hwnd, &mut r);
+            }
+            let w = r.right - r.left;
+            let h = r.bottom - r.top;
+            let left = pt.x - (frac * w as f32) as i32;
+            let top = pt.y - (pt.y - r.top).clamp(0, (self.top_h() * self.scale) as i32 / 2);
+            r = RECT { left, top, right: left + w, bottom: top + h };
+            unsafe {
+                let _ = SetWindowPos(self.hwnd, None, r.left, r.top, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            pt = cursor_pos();
+        }
+        self.win_drag = Some((ht, pt, r));
+        if ht != HTCAPTION {
+            self.in_size_move = true;
+        }
+        unsafe {
+            SetCapture(self.hwnd);
+        }
+    }
+
+    /// Setzt das Fenster nach dem Zeiger. Bei Größenänderung folgt WM_SIZE,
+    /// dort wird sofort gemalt und mit dem DWM abgeglichen.
+    fn drag_win_to(&mut self, cur: POINT) {
+        let Some((ht, p0, r0)) = self.win_drag else { return };
+        let (dx, dy) = (cur.x - p0.x, cur.y - p0.y);
+        let mut r = r0;
+        let left_edge = matches!(ht, HTLEFT | HTTOPLEFT | HTBOTTOMLEFT);
+        let right_edge = matches!(ht, HTRIGHT | HTTOPRIGHT | HTBOTTOMRIGHT);
+        let top_edge = matches!(ht, HTTOP | HTTOPLEFT | HTTOPRIGHT);
+        let bottom_edge = matches!(ht, HTBOTTOM | HTBOTTOMLEFT | HTBOTTOMRIGHT);
+        if ht == HTCAPTION {
+            r.left += dx;
+            r.right += dx;
+            r.top += dy;
+            r.bottom += dy;
+        } else {
+            if left_edge { r.left += dx; }
+            if right_edge { r.right += dx; }
+            if top_edge { r.top += dy; }
+            if bottom_edge { r.bottom += dy; }
+            // Mindestmaß: die gezogene Kante bleibt stehen, nicht die andere.
+            let min_w = (480.0 * self.scale) as i32;
+            let min_h = (320.0 * self.scale) as i32;
+            if r.right - r.left < min_w {
+                if left_edge { r.left = r.right - min_w; } else { r.right = r.left + min_w; }
+            }
+            if r.bottom - r.top < min_h {
+                if top_edge { r.top = r.bottom - min_h; } else { r.bottom = r.top + min_h; }
+            }
+        }
+        let mut cur_r = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(self.hwnd, &mut cur_r);
+        }
+        if cur_r == r {
+            return;
+        }
+        unsafe {
+            let _ = SetWindowPos(
+                self.hwnd,
+                None,
+                r.left,
+                r.top,
+                r.right - r.left,
+                r.bottom - r.top,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+
+    /// Ende der Schleife. `cancel` (Escape) stellt das Ausgangsmaß wieder her.
+    /// Beim Verschieben andocken wie Windows: oben anschlagen = Vollformat,
+    /// links/rechts anschlagen = halbe Arbeitsfläche.
+    fn end_win_drag(&mut self, cancel: bool) {
+        let Some((ht, _, r0)) = self.win_drag.take() else { return };
+        unsafe {
+            if GetCapture() == self.hwnd {
+                let _ = ReleaseCapture();
+            }
+        }
+        if cancel {
+            unsafe {
+                let _ = SetWindowPos(
+                    self.hwnd, None, r0.left, r0.top, r0.right - r0.left, r0.bottom - r0.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+        } else if ht == HTCAPTION {
+            let cur = cursor_pos();
+            let (mon, work) = monitor_rects_at(cur);
+            unsafe {
+                if cur.y <= mon.top + 2 {
+                    let _ = ShowWindow(self.hwnd, SW_MAXIMIZE);
+                } else if cur.x <= mon.left + 2 || cur.x >= mon.right - 3 {
+                    let half = (work.right - work.left) / 2;
+                    let left = if cur.x <= mon.left + 2 { work.left } else { work.left + half };
+                    let _ = SetWindowPos(
+                        self.hwnd, None, left, work.top, half, work.bottom - work.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+            }
+        }
+        self.in_size_move = false;
+        // Zum Abschluss die Seite einmal exakt einpassen.
+        self.relayout_throttled(true);
         self.paint();
     }
 
@@ -3141,11 +3611,12 @@ impl App {
     /// Rückpuffer, dann das PNG der Seite an die richtige Stelle einkopiert.
     fn debug_shot_window(&mut self, page_png: Option<Vec<u8>>) -> Option<Vec<u8>> {
         let (w, h, mut px) = {
+            let rc = client_rect(self.hwnd);
             let c = self.comp.as_ref()?;
             c.begin().ok()?;
             let rt = c.target();
             self.paint_chrome(&rt);
-            let shot = self.comp.as_ref()?.read_back();
+            let shot = self.comp.as_ref()?.read_back(rc.right as u32, rc.bottom as u32);
             let _ = self.comp.as_mut()?.end(false);
             shot?
         };
@@ -3199,6 +3670,14 @@ impl App {
                 "top_tabs": self.top_tabs,
                 "content_left": self.content_left, "editing": self.editing,
                 "glass": self.glass, "tab_scroll": self.tab_scroll,
+                // Messwerte: Dauer des letzten SetBounds der Seite und des
+                // letzten Bildes (Millisekunden) — zum Nachmessen von Rucklern.
+                "bounds_ms": self.bounds_ms, "paint_ms": self.paint_ms,
+                "push_gap_ms": self.sb_push_gap,
+                "size_trace": self.size_trace.iter().map(|(at, w, h, total, paint, layout, moving)| {
+                    json!([(*at * 10.0).round() / 10.0, w, h, (*total * 100.0).round() / 100.0,
+                           (*paint * 100.0).round() / 100.0, (*layout * 100.0).round() / 100.0, moving])
+                }).collect::<Vec<_>>(),
             },
             "shield": { "total": total, "rules": rules, "cosmetic": cosmetic },
             "tabs": tabs,
@@ -4415,15 +4894,6 @@ impl App {
             "shield_toggle",
         ));
         items.push(MenuItem::sep());
-        items.push(MenuItem::new(
-            &format!("{} Regeln · {} Kosmetik", fmt_thousands(rules as u64), fmt_thousands(cosmetic as u64)),
-            "E8A5",
-            "noop",
-        ));
-        for (name, n) in lists.iter().take(8) {
-            items.push(MenuItem::new(&format!("{name} · {}", fmt_thousands(*n as u64)), "E8A5", "noop"));
-        }
-        items.push(MenuItem::sep());
         if !site.is_empty() && site != "aura" {
             items.push(MenuItem::new(
                 &format!("Cookies & Daten von {site} löschen"),
@@ -4431,6 +4901,16 @@ impl App {
                 "clear_site",
             ));
         }
+        // Regeln und Listen stehen in den Einstellungen — hier nur die eine
+        // Zahl, damit das Menü kurz bleibt.
+        let _ = lists;
+        items.push(
+            MenuItem::new(
+                &format!("Einstellungen · {} Regeln", fmt_thousands((rules + cosmetic) as u64)),
+                "E713",
+                "shield_settings",
+            ),
+        );
         items.push(MenuItem::new("Filterlisten aktualisieren", "E72C", "shield_update"));
 
         let r = self.layout.shield;
@@ -4446,6 +4926,22 @@ impl App {
         let mut parts = action.split(':');
         let cmd = parts.next().unwrap_or("");
         let arg = parts.next().and_then(|s| s.parse::<usize>().ok());
+        // Lesezeichenleiste: Kennung ist die Datenbank-ID, nicht der Index.
+        if let Some(rest) = action.strip_prefix("bmopen:").or_else(|| action.strip_prefix("bmcopy:")).or_else(|| action.strip_prefix("bmremove:")) {
+            let id: i64 = rest.parse().unwrap_or(-1);
+            let Some(it) = self.bb_items.iter().find(|b| b.id == id) else { return };
+            let url = it.url.clone();
+            if action.starts_with("bmopen:") {
+                self.new_tab(&url, true);
+            } else if action.starts_with("bmcopy:") {
+                copy_to_clipboard(self.hwnd, &url);
+            } else {
+                self.storage.remove_bookmark(id);
+                self.bookmarks_changed();
+                crate::pages::refresh_bookmark_pages(self);
+            }
+            return;
+        }
         match cmd {
             "close" => { if let Some(i) = arg { self.close_tab(i); } }
             "closeothers" => {
@@ -4573,6 +5069,7 @@ impl App {
                 self.set_shield(on);
             }
             "shield_update" => self.update_filters_now(),
+            "shield_settings" => self.open_internal("aura://settings"),
             "reading" => self.open_internal("aura://reading"),
             "passwords" => self.open_internal("aura://passwords"),
             "tasks" => self.open_internal("aura://tasks"),
@@ -4904,7 +5401,7 @@ impl App {
     fn submit_omnibox(&mut self) {
         // Selected suggestion wins; otherwise treat input as URL/search.
         if let Some(p) = &self.sugg_popup {
-            if let PopupKind::Suggestions { items, selected } = &p.kind {
+            if let PopupKind::Suggestions { items, selected, .. } = &p.kind {
                 if let Some(s) = items.get(*selected) {
                     let s = s.clone();
                     self.end_edit(true);
@@ -5008,7 +5505,8 @@ impl App {
         } else {
             self.storage.add_bookmark(&t.title, &url, t.favicon_png.as_deref(), 0);
         }
-        self.paint();
+        self.bookmarks_changed();
+        crate::pages::refresh_bookmark_pages(self);
     }
 
     // ---------------- shortcuts ----------------
@@ -5400,6 +5898,49 @@ impl App {
             let dir = std::env::temp_dir().join(format!("aura_priv_{}", std::process::id()));
             let _ = std::fs::remove_dir_all(dir);
         }
+    }
+}
+
+/// Größe des Monitors (Bildpunkte), auf dem das Fenster liegt.
+fn monitor_size(hwnd: HWND) -> (u32, u32) {
+    unsafe {
+        let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if GetMonitorInfoW(mon, &mut info).as_bool() {
+            let r = info.rcMonitor;
+            ((r.right - r.left).max(1) as u32, (r.bottom - r.top).max(1) as u32)
+        } else {
+            (1920, 1080)
+        }
+    }
+}
+
+/// Monitor- und Arbeitsfläche am Punkt `pt` (Bildschirmkoordinaten).
+fn monitor_rects_at(pt: POINT) -> (RECT, RECT) {
+    unsafe {
+        let mon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if GetMonitorInfoW(mon, &mut info).as_bool() {
+            (info.rcMonitor, info.rcWork)
+        } else {
+            let r = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
+            (r, r)
+        }
+    }
+}
+
+/// Zeigt Windows den Fensterinhalt beim Ziehen? (Systemsteuerung →
+/// Leistungsoptionen → „Fensterinhalt beim Ziehen anzeigen“.)
+fn drag_full_windows() -> bool {
+    unsafe {
+        let mut on = BOOL(1);
+        let ok = SystemParametersInfoW(
+            SPI_GETDRAGFULLWINDOWS,
+            0,
+            Some(&mut on as *mut BOOL as *mut core::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+        ok.is_err() || on.as_bool()
     }
 }
 

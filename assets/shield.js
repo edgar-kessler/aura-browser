@@ -104,6 +104,28 @@
     // dataLayer bleibt unangetastet – Seiten nutzen ihn auch für eigene Logik.
 
     // ---------------------------------------------------------------- Popunder
+    // Seiten und Videohoster, die bei jedem Klick ein Fenster werfen: dort
+    // gilt der strenge Modus von selbst, auch im eingebetteten Player-Rahmen
+    // (dieses Skript läuft in jedem Rahmen). Der Hoster selbst wechselt seine
+    // Domain oft — deshalb zusätzlich die Regel: ein Klick auf ein Video oder
+    // in einen Player öffnet nie ein Fenster.
+    const STRICT_HOSTS = [
+      'aniworld.to', 'serienstream.to', 's.to', 'bs.to', 'burning-series.io',
+      'kinox.to', 'kinoger.to', 'streamkiste.tv', 'movie4k.to', 'hdfilme.my',
+      'voe.sx', 'vidoza.net', 'streamtape.com', 'doodstream.com', 'dood.to', 'dood.la',
+      'dood.so', 'dood.ws', 'dood.pm', 'ds2play.com', 'd0o0d.com', 'filemoon.sx',
+      'mixdrop.co', 'mixdrop.to', 'vidmoly.to', 'vidmoly.me', 'streamwish.to',
+      'filelions.to', 'luluvdo.com', 'upstream.to', 'mp4upload.com', 'vidhide.com',
+      'vtube.to', 'streamvid.net', 'speedfiles.net', 'vidguard.to', 'vembed.net',
+    ];
+    const hostOf = h => { try { return String(h || '').toLowerCase(); } catch (e) { return ''; } };
+    const onList = h => STRICT_HOSTS.some(d => h === d || h.endsWith('.' + d));
+    if (onList(hostOf(location.hostname))) window.__auraStrictPopups = true;
+    // Im Rahmen eines fremden Players: der Klick gehört dem Video.
+    let inForeignFrame = false;
+    try { inForeignFrame = window.self !== window.top && !window.top.location.hostname; } catch (e) { inForeignFrame = true; }
+    const PLAYER = 'video, audio, .video-js, .jw-video, .jwplayer, .plyr, .vjs-tech, [class*="player"], [id*="player"]';
+
     const realOpen = window.open;
     const dummy = () => ({
       closed: true, close: noop, focus: noop, blur: noop, postMessage: noop,
@@ -117,14 +139,21 @@
         AURA.blocked++;                       // rein programmatisch → Popunder
         return dummy();
       }
-      if (window.__auraStrictPopups) {
-        // Strenger Modus: nur Links dürfen Fenster öffnen.
-        const ev = window.event;
-        const fromLink = !!(ev && ev.target && ev.target.closest && ev.target.closest('a[href]'));
-        if (!fromLink) {
-          AURA.blocked++;
-          return dummy();
-        }
+      const ev = window.event;
+      const target = ev && ev.target && ev.target.closest ? ev.target : null;
+      const fromLink = !!(target && target.closest('a[href]'));
+      // Ein Klick auf das Video oder in den Player öffnet nie ein Fenster —
+      // das ist immer ein Popunder, egal wo.
+      if (target && !fromLink && target.closest(PLAYER)) {
+        AURA.blocked++;
+        return dummy();
+      }
+      // Fremder Rahmen mit Video darin: strenger Modus von selbst.
+      const strict = window.__auraStrictPopups
+        || (inForeignFrame && document.querySelector('video, audio'));
+      if (strict && !fromLink) {
+        AURA.blocked++;
+        return dummy();
       }
       return realOpen.apply(window, arguments);
     };
