@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod adblock;
+mod anim;
 mod app;
 mod devtools;
 mod gfx;
@@ -10,6 +11,7 @@ mod pages;
 mod popup;
 mod storage;
 mod tabs;
+mod textfield;
 mod theme;
 mod update;
 mod util;

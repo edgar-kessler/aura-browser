@@ -52,13 +52,6 @@ pub fn edit_text(edit: HWND) -> String {
     }
 }
 
-pub fn set_edit_text(edit: HWND, text: &str) {
-    let w = wide(text);
-    unsafe {
-        let _ = SetWindowTextW(edit, windows::core::PCWSTR(w.as_ptr()));
-    }
-}
-
 pub fn search_url(app: &App, query: &str) -> String {
     let engine = app.storage.get_setting("search_engine", "google");
     let q = query.replace(' ', "+");

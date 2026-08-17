@@ -52,11 +52,16 @@ const SB_GRIP: f32 = 5.0;
 const CAP_W: f32 = 40.0;
 const CAP_H: f32 = 34.0;
 
-/// Animation timings (ms).
-const ANIM_SIDEBAR: f32 = 260.0;
-const ANIM_HOVER: f32 = 130.0;
-const ANIM_INDICATOR: f32 = 200.0;
-const ANIM_TAB: f32 = 165.0;
+/// Bewegung. Federn geben eine Schwingungsdauer in Sekunden und ein
+/// Dämpfungsmaß an; alles unter 1 federt sichtbar nach.
+const SPRING_SIDEBAR: (f32, f32) = (0.42, 1.0);
+/// Die Marke der aktiven Zeile darf ein wenig überschwingen — das ist die
+/// Bewegung, die man wirklich sieht.
+const SPRING_INDICATOR: (f32, f32) = (0.34, 0.78);
+const SPRING_SCROLL: (f32, f32) = (0.36, 1.0);
+/// Zeitkonstanten fürs Auf- und Abblenden (Sekunden).
+const TAU_HOVER: f32 = 0.055;
+const TAU_TAB: f32 = 0.075;
 
 /// Akzentfarbe und Dunkel-Flag der laufenden App — für Skripte, die in Seiten
 /// injiziert werden und zum Design passen sollen.
@@ -87,25 +92,9 @@ fn now_ms() -> u64 {
     unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
 }
 
-/// Cubic ease-out — fast start, soft landing.
-fn ease_out(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    let u = 1.0 - t;
-    1.0 - u * u * u
-}
-
-fn approach(cur: f32, target: f32, dt: f32, dur: f32) -> f32 {
-    if dur <= 0.0 {
-        return target;
-    }
-    let step = dt / dur;
-    if (target - cur).abs() <= step {
-        target
-    } else if target > cur {
-        cur + step
-    } else {
-        cur - step
-    }
+/// Auf- und Abblenden mit Zeitkonstante. Siehe [`crate::anim`].
+fn approach(cur: f32, target: f32, dt_s: f32, tau: f32) -> f32 {
+    crate::anim::approach(cur, target, dt_s, tau)
 }
 
 thread_local! {
@@ -234,6 +223,22 @@ pub struct App {
     pub sb_wide: f32,
     /// Läuft gerade ein Ziehen an der Kante? Enthält den Griffversatz.
     pub sb_drag: Option<f32>,
+    /// Wann die Seite zuletzt umgebrochen wurde, und wie lange das dauerte.
+    /// Daraus ergibt sich der Takt, in dem beim Ziehen nachgezogen wird.
+    sb_push_at: u64,
+    sb_push_gap: u64,
+    /// Setzt `relayout` aus, die Seite neu einzupassen — siehe
+    /// `follow_content_edge`.
+    hold_webviews: bool,
+    /// Das Adressfeld — selbst gezeichnet, siehe crate::textfield.
+    pub omni: crate::textfield::TextField,
+    /// Läuft gerade eine Auswahl mit gedrückter Maustaste im Adressfeld?
+    pub omni_drag: bool,
+    /// Federn für die Bewegungen, die man wirklich sieht.
+    pub sb_spring: crate::anim::Spring,
+    pub scroll_spring: crate::anim::Spring,
+    pub ind_y_spring: crate::anim::Spring,
+    pub ind_h_spring: crate::anim::Spring,
     /// Scroll offset of the tab list in DIP (0 = top). Grows with many tabs.
     pub tab_scroll: f32,
     pub tab_scroll_target: f32,
@@ -247,8 +252,6 @@ pub struct App {
     pub layout: Layout,
 
     // animation state
-    sb_from: f32,
-    sb_t0: u64,
     hot_prev: Hot,
     hot_t: f32,
     hot_prev_t: f32,
@@ -490,6 +493,15 @@ impl App {
             sidebar_target: SB_COLLAPSED,
             sb_wide: SB_EXPANDED,
             sb_drag: None,
+            sb_push_at: 0,
+            sb_push_gap: 16,
+            hold_webviews: false,
+            omni: crate::textfield::TextField::new(),
+            omni_drag: false,
+            sb_spring: crate::anim::Spring::new(SB_COLLAPSED, SPRING_SIDEBAR.0, SPRING_SIDEBAR.1),
+            scroll_spring: crate::anim::Spring::new(0.0, SPRING_SCROLL.0, SPRING_SCROLL.1),
+            ind_y_spring: crate::anim::Spring::new(0.0, SPRING_INDICATOR.0, SPRING_INDICATOR.1),
+            ind_h_spring: crate::anim::Spring::new(0.0, SPRING_INDICATOR.0, SPRING_INDICATOR.1),
             tab_scroll: 0.0,
             tab_scroll_target: 0.0,
             tab_scroll_max: 0.0,
@@ -498,8 +510,6 @@ impl App {
             hot: Hot::None,
             pressed: Hot::None,
             layout: Layout::default(),
-            sb_from: SB_COLLAPSED,
-            sb_t0: 0,
             hot_prev: Hot::None,
             hot_t: 0.0,
             hot_prev_t: 0.0,
@@ -588,6 +598,7 @@ impl App {
             app.sidebar_w = app.sb_wide;
             app.sidebar_target = app.sb_wide;
             app.content_left = app.sb_wide;
+            app.sb_spring.jump_to(app.sb_wide);
         }
 
         // Show the chrome before the (slow) WebView2 environment comes up, so the
@@ -805,10 +816,27 @@ impl App {
                         self.begin_sidebar_drag(x_lparam(l) as f32 / self.scale);
                         return LRESULT(0);
                     }
+                    // Klick in die schon offene Adressleiste setzt die Marke,
+                    // statt den Text erneut ganz auszuwählen.
+                    if self.editing && hot == Hot::Omnibox {
+                        let xd = x_lparam(l) as f32 / self.scale;
+                        let i = self.omnibox_index_at(xd);
+                        self.omni.caret = i;
+                        self.omni.anchor = i;
+                        self.omni.blink_from = now_ms();
+                        self.omni_drag = true;
+                        SetCapture(self.hwnd);
+                        self.paint();
+                        return LRESULT(0);
+                    }
                     self.on_click(hot);
                     return LRESULT(0);
                 }
                 WM_LBUTTONUP => {
+                    if self.omni_drag {
+                        self.omni_drag = false;
+                        let _ = ReleaseCapture();
+                    }
                     self.end_sidebar_drag();
                     return LRESULT(0);
                 }
@@ -907,8 +935,27 @@ impl App {
                     let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
                     let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
                     let alt = GetKeyState(VK_MENU.0 as i32) < 0;
+                    // Solange die Adresse bearbeitet wird, gehören die Tasten
+                    // ihr — bis auf die Kürzel, die überall gelten.
+                    if self.editing && !alt {
+                        if self.omnibox_key(w.0 as u32, ctrl, shift) {
+                            return LRESULT(0);
+                        }
+                    }
                     if self.shortcut(w.0 as u32, ctrl, shift, alt) {
                         return LRESULT(0);
+                    }
+                    return DefWindowProcW(hwnd, msg, w, l);
+                }
+                WM_CHAR => {
+                    if self.editing {
+                        if let Some(c) = char::from_u32(w.0 as u32) {
+                            if self.omni.char_input(c, now_ms()) {
+                                self.on_omnibox_changed();
+                                self.paint();
+                                return LRESULT(0);
+                            }
+                        }
                     }
                     return DefWindowProcW(hwnd, msg, w, l);
                 }
@@ -1154,7 +1201,37 @@ impl App {
                 true,
             );
         }
-        self.layout_webviews();
+        if !self.hold_webviews {
+            self.layout_webviews();
+        }
+    }
+
+    /// Zieht die Kante der Seite nach — aber nicht bei jeder Mausbewegung.
+    ///
+    /// Jedes `SetBounds` zwingt WebView2 zu einem vollständigen Neuaufbau der
+    /// Seite. Auf einer leichten Seite dauert das ein bis zwei Millisekunden,
+    /// auf einer schweren dreißig. Ungebremst bei jeder Bewegung aufgerufen
+    /// bleibt der Zeiger stehen und das Ziehen wirkt kaputt; gar nicht
+    /// aufgerufen springt die Seite erst beim Loslassen.
+    ///
+    /// Also messen wir, wie lange der letzte Umbruch gedauert hat, und warten
+    /// das Doppelte davon ab — leichte Seiten laufen so bei jedem Bild mit,
+    /// schwere gehen von selbst auf einen ruhigeren Takt. `force` erzwingt den
+    /// Umbruch am Ende der Bewegung.
+    fn follow_content_edge(&mut self, left: f32, force: bool) {
+        self.content_left = left;
+        let now = now_ms();
+        let due = force || now.saturating_sub(self.sb_push_at) >= self.sb_push_gap;
+        // Die eigene Oberfläche wird immer neu vermessen — nur die Seite wartet
+        // auf ihren Takt. Sonst stünde beim Ziehen auch die Leiste still.
+        self.hold_webviews = !due;
+        self.relayout();
+        self.hold_webviews = false;
+        if due {
+            let cost = now_ms().saturating_sub(now);
+            self.sb_push_gap = (cost * 2).clamp(16, 120);
+            self.sb_push_at = now_ms();
+        }
     }
 
     pub fn layout_webviews(&mut self) {
@@ -1517,15 +1594,17 @@ impl App {
             // über allen Kindfenstern, das Feld wäre also übermalt und die
             // Adresse unsichtbar. Also dort ein Loch lassen, genau wie im
             // Inhaltsbereich für die Seite.
-            // Das Loch liegt eine Bildpunktbreite *innerhalb* des Eingabefeldes
-            // (siehe MoveWindow in relayout: +38/+7, Breite −80, Höhe 24) —
-            // sonst bliebe an der Kante ein durchsichtiger Streifen stehen,
-            // durch den man den Schreibtisch sähe.
-            if self.editing && self.comp.is_some() {
-                let hole = rect_f(r.left + 39.0, r.top + 8.0, (r.right - r.left) - 82.0, 22.0);
-                rt.PushAxisAlignedClip(&hole, D2D1_ANTIALIAS_MODE_ALIASED);
-                rt.Clear(None);
-                rt.PopAxisAlignedClip();
+            // Beim Tippen zeichnen wir den Text selbst. Ein EDIT-Kindfenster
+            // wäre hier unsichtbar: das Hauptfenster trägt
+            // WS_EX_NOREDIRECTIONBITMAP und hat damit keine Umleitungsfläche,
+            // in die ein GDI-Kindfenster zeichnen könnte.
+            if self.editing {
+                let field = self.omnibox_text_rect();
+                let dwrite = self.gfx.dwrite.clone();
+                let fmt = self.fmt_ui.clone();
+                fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
+                fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR).ok();
+                self.omni.paint(rt, &dwrite, &fmt, field, theme, now_ms());
             }
 
             // URL text (only when not editing; edit control shows text otherwise)
@@ -2054,6 +2133,12 @@ impl App {
             self.drag_sidebar(x);
             return;
         }
+        if self.omni_drag {
+            self.omni.caret = self.omnibox_index_at(x);
+            self.omni.blink_from = now_ms();
+            self.paint();
+            return;
+        }
         // Optional: sidebar unfolds while the pointer rests on it.
         if self.storage.get_setting("sidebar_hover", "0") == "1" && !self.editing {
             let inside = x < self.sidebar_w + 4.0;
@@ -2181,11 +2266,14 @@ impl App {
         if self.theme.reduce_motion {
             self.sidebar_w = self.sidebar_target;
             self.content_left = self.sidebar_target;
+            self.sb_spring.jump_to(self.sidebar_target);
             self.relayout();
             self.paint();
         } else {
-            self.sb_from = self.sidebar_w;
-            self.sb_t0 = now_ms();
+            // Die Feder übernimmt den Ist-Wert; ihre Geschwindigkeit bleibt
+            // erhalten, damit ein Umschalten mitten in der Bewegung weich
+            // abbiegt statt neu anzusetzen.
+            self.sb_spring.value = self.sidebar_w;
             self.relayout();
             self.start_anim();
         }
@@ -2207,6 +2295,9 @@ impl App {
 
     /// Zieht die Kante mit. Kein Weichzeichnen der Breite: die Leiste muss am
     /// Zeiger kleben, sonst fühlt sich das Ziehen schwammig an.
+    ///
+    /// Die Seite geht dabei mit — im Takt, den [`Self::follow_content_edge`]
+    /// aus der gemessenen Dauer des letzten Umbruchs bestimmt.
     fn drag_sidebar(&mut self, x: f32) {
         let Some(off) = self.sb_drag else { return };
         let raw = x + off;
@@ -2217,9 +2308,8 @@ impl App {
         }
         self.sidebar_w = w;
         self.sidebar_target = w;
-        self.content_left = w;
         self.expanded = w > SB_SNAP;
-        self.relayout();
+        self.follow_content_edge(w, false);
         self.paint();
     }
 
@@ -2230,6 +2320,10 @@ impl App {
         unsafe {
             let _ = ReleaseCapture();
         }
+        // Zum Abschluss die endgültige Kante, ohne Taktbremse.
+        self.follow_content_edge(self.sidebar_w, true);
+        // Die Feder übernimmt die gezogene Breite, ohne nachzuschwingen.
+        self.sb_spring.jump_to(self.sidebar_w);
         if self.expanded {
             self.sb_wide = self.sidebar_w;
             self.storage
@@ -2366,9 +2460,34 @@ impl App {
                 let ctrl = req.body.get("ctrl").and_then(|v| v.as_bool()).unwrap_or(false);
                 let shift = req.body.get("shift").and_then(|v| v.as_bool()).unwrap_or(false);
                 let alt = req.body.get("alt").and_then(|v| v.as_bool()).unwrap_or(false);
-                let handled = self.shortcut(vk, ctrl, shift, alt);
-                Response::json(json!({ "ok": true, "handled": handled }))
+                // Dieselbe Reihenfolge wie bei echten Tasten: erst die
+                // Adressleiste, dann die allgemeinen Kürzel.
+                let handled = (self.editing && !alt && self.omnibox_key(vk, ctrl, shift))
+                    || self.shortcut(vk, ctrl, shift, alt);
+                Response::json(json!({
+                    "ok": true, "handled": handled,
+                    "omnibox": self.omni.text(), "editing": self.editing,
+                }))
             }
+            "/type" => match arg("text") {
+                Some(text) => {
+                    // Tippt in die Adressleiste, wenn sie offen ist — sonst in
+                    // die Seite, über das DevTools-Protokoll.
+                    if self.editing {
+                        self.omni.insert(&text, now_ms());
+                        self.on_omnibox_changed();
+                        self.paint();
+                        Response::json(json!({ "ok": true, "value": self.omni.text() }))
+                    } else {
+                        for ch in text.chars() {
+                            let p = json!({ "type": "char", "text": ch.to_string() }).to_string();
+                            self.debug_cdp("Input.dispatchKeyEvent", &p);
+                        }
+                        Response::json(json!({ "ok": true }))
+                    }
+                }
+                None => Response::error(400, "text fehlt"),
+            },
             "/eval" => match arg("js") {
                 Some(js) => match self.debug_eval(&js) {
                     Some(v) => Response::json(json!({ "result": v })),
@@ -2705,46 +2824,46 @@ impl App {
 
     fn anim_tick(&mut self) {
         let now = now_ms();
-        let dt = (now.saturating_sub(self.anim_last)) as f32;
+        let dt = (now.saturating_sub(self.anim_last)) as f32 / 1000.0; // Sekunden
         self.anim_last = now;
         let mut busy = false;
         let mut needs_layout = false;
 
-        // sidebar slide
-        if (self.sidebar_w - self.sidebar_target).abs() > 0.05 {
-            let p = ((now.saturating_sub(self.sb_t0)) as f32 / ANIM_SIDEBAR).clamp(0.0, 1.0);
-            self.sidebar_w = self.sb_from + (self.sidebar_target - self.sb_from) * ease_out(p);
-            if p >= 1.0 {
-                self.sidebar_w = self.sidebar_target;
-            } else {
-                busy = true;
+        // Breite der Seitenleiste. Als Feder, damit ein Umschalten mitten in
+        // der Bewegung weich abbiegt statt neu anzusetzen.
+        if self.sb_drag.is_none() {
+            self.sb_spring.set_target(self.sidebar_target);
+            if !self.sb_spring.at_rest(0.05) {
+                self.sb_spring.step(dt);
+                self.sidebar_w = self.sb_spring.value;
+                let settled = self.sb_spring.at_rest(0.05);
+                busy |= !settled;
+                // Die Seite geht mit, im gemessenen Takt — am Ende einmal
+                // erzwungen, damit sie genau auf der Kante sitzt.
+                self.follow_content_edge(self.sidebar_w, settled);
             }
-            needs_layout = true;
         }
-        // The easing lands within a hair of the target well before p reaches 1,
-        // so release the held content edge here rather than inside the branch —
-        // otherwise the page keeps the wider gap forever.
-        if (self.sidebar_w - self.sidebar_target).abs() <= 0.05
+        // Zur Sicherheit: steht die Leiste, muss auch die Seite genau dort
+        // enden — sonst bliebe bei einem verschluckten Bild ein Spalt stehen.
+        if self.sb_drag.is_none()
+            && (self.sidebar_w - self.sidebar_target).abs() <= 0.05
             && (self.content_left - self.sidebar_target).abs() > 0.05
         {
             self.sidebar_w = self.sidebar_target;
-            self.content_left = self.sidebar_target;
-            needs_layout = true;
+            self.follow_content_edge(self.sidebar_target, true);
         }
 
-        // smooth tab-list scrolling
-        if (self.tab_scroll - self.tab_scroll_target).abs() > 0.3 {
-            let k = (dt / 110.0).clamp(0.0, 1.0);
-            self.tab_scroll += (self.tab_scroll_target - self.tab_scroll) * k;
-            needs_layout = true;
-            busy = true;
-        } else if self.tab_scroll != self.tab_scroll_target {
-            self.tab_scroll = self.tab_scroll_target;
+        // Bildlauf der Tabliste.
+        self.scroll_spring.set_target(self.tab_scroll_target);
+        if !self.scroll_spring.at_rest(0.3) {
+            self.scroll_spring.step(dt);
+            self.tab_scroll = self.scroll_spring.value;
+            busy |= !self.scroll_spring.at_rest(0.3);
             needs_layout = true;
         }
 
         // tab rows growing in / shrinking away
-        let step = dt / ANIM_TAB;
+        let step = dt / TAU_TAB * 0.5;
         let mut drop_any = false;
         for t in &mut self.tabs {
             if t.closing {
@@ -2772,28 +2891,42 @@ impl App {
             busy = true;
         }
 
-        // hover cross-fade
+        // Auf- und Abblenden unter dem Zeiger.
         if self.hot_t < 1.0 && self.hot != Hot::None {
-            self.hot_t = approach(self.hot_t, 1.0, dt, ANIM_HOVER);
+            self.hot_t = approach(self.hot_t, 1.0, dt, TAU_HOVER);
+            if self.hot_t > 0.999 {
+                self.hot_t = 1.0;
+            }
             busy |= self.hot_t < 1.0;
         }
         if self.hot_prev_t > 0.0 {
-            self.hot_prev_t = approach(self.hot_prev_t, 0.0, dt, ANIM_HOVER);
+            self.hot_prev_t = approach(self.hot_prev_t, 0.0, dt, TAU_HOVER);
+            if self.hot_prev_t < 0.002 {
+                self.hot_prev_t = 0.0;
+            }
             busy |= self.hot_prev_t > 0.0;
         }
 
-        // active-tab indicator slide
+        // Marke der aktiven Zeile. Zwei Federn, damit Lage und Höhe getrennt
+        // nachziehen — beim Wechsel zwischen verschieden hohen Zeilen sieht das
+        // aus, als würde die Marke sich dehnen.
         let (ty, th) = self.indicator_target();
         if !self.ind_ready {
+            self.ind_y_spring.jump_to(ty);
+            self.ind_h_spring.jump_to(th);
             self.ind_y = ty;
             self.ind_h = th;
             self.ind_ready = true;
-        } else if (self.ind_y - ty).abs() > 0.2 || (self.ind_h - th).abs() > 0.2 {
-            let k = (dt / ANIM_INDICATOR).clamp(0.0, 1.0) * 2.2;
-            let k = k.min(1.0);
-            self.ind_y += (ty - self.ind_y) * k;
-            self.ind_h += (th - self.ind_h) * k;
-            busy = true;
+        } else {
+            self.ind_y_spring.set_target(ty);
+            self.ind_h_spring.set_target(th);
+            if !self.ind_y_spring.at_rest(0.2) || !self.ind_h_spring.at_rest(0.2) {
+                self.ind_y_spring.step(dt);
+                self.ind_h_spring.step(dt);
+                self.ind_y = self.ind_y_spring.value;
+                self.ind_h = self.ind_h_spring.value;
+                busy = true;
+            }
         }
 
         if needs_layout {
@@ -3917,9 +4050,7 @@ impl App {
     }
 
     fn open_palette(&mut self) {
-        self.begin_edit();
-        omnibox::set_edit_text(self.edit, ">");
-        self.on_omnibox_changed();
+        self.begin_edit_with(">");
     }
 
     fn sleep_active_tab(&mut self) {
@@ -3983,27 +4114,88 @@ impl App {
     pub fn begin_edit(&mut self) {
         self.editing = true;
         let url = self.tabs.get(self.active).map(|t| t.url.clone()).unwrap_or_default();
-        omnibox::set_edit_text(self.edit, &url);
+        self.omni.set_text(&url, now_ms());
+        self.omni.select_all();
+        self.omni.focused = true;
         unsafe {
-            let _ = ShowWindow(self.edit, SW_SHOW);
-            let _ = SetFocus(Some(self.edit));
+            let _ = SetFocus(Some(self.hwnd));
         }
-        send_msg(self.edit, EM_SETSEL, WPARAM(0), LPARAM(-1));
         self.on_omnibox_changed();
+        self.start_anim();
+        self.paint();
+    }
+
+    /// Setzt einen Text ins Adressfeld und stellt die Marke ans Ende — für die
+    /// Befehls- und Tabsuche, die mit ">" bzw. "@" beginnen.
+    pub fn begin_edit_with(&mut self, prefix: &str) {
+        self.editing = true;
+        self.omni.set_text(prefix, now_ms());
+        self.omni.focused = true;
+        unsafe {
+            let _ = SetFocus(Some(self.hwnd));
+        }
+        self.on_omnibox_changed();
+        self.start_anim();
         self.paint();
     }
 
     pub fn end_edit(&mut self, keep: bool) {
         let _ = keep;
         self.editing = false;
-        unsafe {
-            let _ = ShowWindow(self.edit, SW_HIDE);
-            let _ = SetFocus(Some(self.hwnd));
-        }
+        self.omni.focused = false;
+        self.omni_drag = false;
         if let Some(p) = self.sugg_popup.take() {
             p.close();
         }
         self.paint();
+    }
+
+    /// Der Bereich innerhalb der Adressleiste, in dem der Text steht.
+    fn omnibox_text_rect(&self) -> D2D_RECT_F {
+        let r = self.layout.omnibox;
+        rect_f(r.left + 38.0, r.top + 6.0, (r.right - r.left - 80.0).max(1.0), (r.bottom - r.top) - 12.0)
+    }
+
+    fn omnibox_index_at(&self, x: f32) -> usize {
+        let fmt = self.fmt_ui.clone();
+        unsafe {
+            fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
+        }
+        self.omni.index_at(&self.gfx.dwrite, &fmt, self.omnibox_text_rect(), x)
+    }
+
+    /// Tasten im Adressfeld. Gibt zurück, ob die Taste verbraucht wurde.
+    fn omnibox_key(&mut self, vk: u32, ctrl: bool, shift: bool) -> bool {
+        const VK_RETURN: u32 = 0x0D;
+        const VK_ESCAPE: u32 = 0x1B;
+        const VK_UP: u32 = 0x26;
+        const VK_DOWN: u32 = 0x28;
+        const VK_TAB: u32 = 0x09;
+        match vk {
+            VK_RETURN => {
+                self.submit_omnibox();
+                true
+            }
+            VK_ESCAPE => {
+                self.end_edit(false);
+                true
+            }
+            VK_UP | VK_DOWN | VK_TAB => {
+                let delta = if vk == VK_UP { -1 } else { 1 };
+                omnibox::navigate_suggestions(self, delta);
+                true
+            }
+            _ => {
+                let r = self.omni.key(vk, ctrl, shift, now_ms());
+                if r.handled {
+                    if r.changed {
+                        self.on_omnibox_changed();
+                    }
+                    self.paint();
+                }
+                r.handled
+            }
+        }
     }
 
     fn on_omnibox_changed(&mut self) {
@@ -4013,7 +4205,7 @@ impl App {
             }
             return;
         }
-        let text = omnibox::edit_text(self.edit);
+        let text = self.omni.text();
         let items = omnibox::build_suggestions(self, &text);
         if items.is_empty() {
             if let Some(p) = self.sugg_popup.take() {
@@ -4036,7 +4228,7 @@ impl App {
                 }
             }
         }
-        let text = omnibox::edit_text(self.edit);
+        let text = self.omni.text();
         self.end_edit(true);
         let url = omnibox::resolve_input(self, &text);
         if !url.is_empty() {
@@ -4358,10 +4550,7 @@ impl App {
 
     /// Opens the omnibox in tab-search mode ("@" lists every open tab).
     fn open_tab_search(&mut self) {
-        self.begin_edit();
-        omnibox::set_edit_text(self.edit, "@");
-        send_msg(self.edit, EM_SETSEL, WPARAM(1), LPARAM(1));
-        self.on_omnibox_changed();
+        self.begin_edit_with("@");
     }
 
     fn view_source(&mut self) {
