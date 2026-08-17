@@ -235,6 +235,39 @@ kbd{
 .empty{text-align:center;color:rgb(var(--fg-dim));padding:64px 0;font-size:14px;line-height:1.7}
 .note{font-size:13px;color:rgb(var(--fg-dim));margin-top:12px;line-height:1.6}
 
+/* ---------- Dropdown (ersetzt <select>, siehe aura.js) ---------- */
+.dd{position:relative;display:inline-block}
+.dd-native{position:absolute!important;opacity:0;pointer-events:none;width:1px;height:1px;left:0;top:0}
+button.dd-btn{
+  display:inline-flex;align-items:center;justify-content:space-between;gap:10px;
+  min-width:150px;height:36px;padding:0 10px 0 12px;border-radius:var(--r-md);
+  border:1px solid rgb(var(--line));background:rgb(var(--bg));color:rgb(var(--fg));
+  font:inherit;font-size:14px;cursor:pointer;text-align:left;
+  transition:border-color .15s var(--ease),background .15s var(--ease);
+}
+button.dd-btn:hover{background:rgb(var(--muted))}
+.dd.open button.dd-btn,button.dd-btn:focus-visible{outline:none;border-color:rgb(var(--accent));box-shadow:0 0 0 3px rgba(var(--accent),.15)}
+.dd-chev{width:14px;height:14px;flex:none;stroke:rgb(var(--fg-dim));fill:none;stroke-width:2;transition:transform .15s var(--ease)}
+.dd.open .dd-chev{transform:rotate(180deg)}
+.dd-menu{
+  position:absolute;left:0;top:calc(100% + 4px);z-index:50;min-width:100%;
+  padding:4px;border-radius:var(--r-lg);
+  background:rgb(var(--card));border:1px solid rgb(var(--line));box-shadow:var(--shadow-md);
+  opacity:0;transform:scale(.96);transform-origin:top center;pointer-events:none;
+  transition:opacity .15s var(--ease),transform .15s var(--ease);
+  max-height:280px;overflow-y:auto;
+}
+.dd.up .dd-menu{top:auto;bottom:calc(100% + 4px);transform-origin:bottom center}
+.dd-menu.in{opacity:1;transform:none;pointer-events:auto}
+.dd-item{
+  padding:7px 10px;border-radius:var(--r-sm);font-size:14px;cursor:pointer;white-space:nowrap;
+  color:rgb(var(--fg));transition:background .1s var(--ease);
+}
+.dd-item.hi,.dd-item:hover{background:rgb(var(--muted))}
+.dd-item.sel{font-weight:500}
+.dd-item.sel::after{content:"";float:right;width:6px;height:6px;margin:6px 2px 0 12px;border-radius:99px;background:rgb(var(--accent))}
+body.reduce .dd-menu{transition:none}
+
 /* ---------- Bewegung ----------
    Kurz und flach: der Inhalt setzt sich, er fliegt nicht ein. */
 @keyframes rise{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
