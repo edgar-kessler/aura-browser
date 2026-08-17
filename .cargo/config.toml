@@ -1,2 +1,6 @@
 [target.x86_64-pc-windows-gnu]
 linker = "C:\\Users\\admin\\tools\\mingw64\\bin\\gcc.exe"
+# Die windows-Crates binden Systembibliotheken per raw-dylib ein; dafuer ruft
+# rustc dlltool auf. Das mitgelieferte dlltool sucht seinen Assembler nur im
+# eigenen Ordner und findet keinen – das von MinGW hat ihn daneben liegen.
+rustflags = ["-C", "dlltool=C:\\Users\\admin\\tools\\mingw64\\bin\\dlltool.exe"]

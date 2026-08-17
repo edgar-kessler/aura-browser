@@ -186,6 +186,64 @@ pub fn finish_pending() -> bool {
     true
 }
 
+/// Traegt die laufende Version in den Eintrag unter Apps & Features nach.
+/// Das Setup (installer/) schreibt ihn bei der Installation; nach einem
+/// Selbst-Update stuende dort sonst fuer immer die alte Nummer. Nur, wenn der
+/// Eintrag auf unseren eigenen Ordner zeigt.
+pub fn sync_registry_version() {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::System::Registry::*;
+    let Ok(exe) = std::env::current_exe() else { return };
+    let Some(dir) = exe.parent() else { return };
+    let dir = dir.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase();
+    unsafe {
+        let mut key = HKEY::default();
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Aura Browser"),
+            None,
+            KEY_READ | KEY_SET_VALUE,
+            &mut key,
+        )
+        .is_err()
+        {
+            return;
+        }
+        let mut buf = [0u16; 1024];
+        let mut size = (buf.len() * 2) as u32;
+        let loc_ok = RegQueryValueExW(
+            key,
+            w!("InstallLocation"),
+            None,
+            None,
+            Some(buf.as_mut_ptr() as *mut u8),
+            Some(&mut size),
+        )
+        .is_ok();
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        let loc = String::from_utf16_lossy(&buf[..len]);
+        if loc_ok && loc.trim_end_matches(['\\', '/']).to_lowercase() == dir {
+            let mut cur = [0u16; 64];
+            let mut csize = (cur.len() * 2) as u32;
+            let _ = RegQueryValueExW(
+                key,
+                w!("DisplayVersion"),
+                None,
+                None,
+                Some(cur.as_mut_ptr() as *mut u8),
+                Some(&mut csize),
+            );
+            let clen = cur.iter().position(|&c| c == 0).unwrap_or(cur.len());
+            if String::from_utf16_lossy(&cur[..clen]) != VERSION {
+                let value: Vec<u16> = VERSION.encode_utf16().chain(std::iter::once(0)).collect();
+                let bytes: Vec<u8> = value.iter().flat_map(|c| c.to_le_bytes()).collect();
+                let _ = RegSetValueExW(key, PCWSTR(w!("DisplayVersion").0), None, REG_SZ, Some(&bytes));
+            }
+        }
+        let _ = RegCloseKey(key);
+    }
+}
+
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {

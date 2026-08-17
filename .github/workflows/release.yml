@@ -1,7 +1,8 @@
 name: Release
 
 # Baut auf jedes v*-Tag ein Windows-Paket und haengt es an das Release.
-# Genau dieses ZIP holt sich der Auto-Updater aus src/update.rs.
+# Genau dieses ZIP holt sich der Auto-Updater aus src/update.rs; das Setup
+# daneben ist unser eigener Installer aus installer/.
 
 on:
   push:
@@ -24,7 +25,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Tests
-        run: cargo test --release
+        run: |
+          cargo test --release
+          cargo test --release -p aura-setup
 
       - name: Bauen
         run: cargo build --release
@@ -44,19 +47,13 @@ jobs:
       - name: Installer bauen
         shell: pwsh
         run: |
-          $version = if ($env:GITHUB_REF -match 'refs/tags/v(.+)') { $Matches[1] } else { "0.0.0" }
-          # Nutzlast fuer den Installer aus dem bereits gebauten Paket.
-          New-Item -ItemType Directory -Force -Path dist/payload | Out-Null
-          Copy-Item aura-browser-windows-x64/* dist/payload -Recurse -Force
-          $iscc = Get-ChildItem -Path "C:\Program Files (x86)\Inno Setup 6","C:\Program Files\Inno Setup 6" `
-            -Filter ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $iscc) {
-            choco install innosetup -y --no-progress
-            $iscc = Get-ChildItem -Path "C:\Program Files (x86)\Inno Setup 6" -Filter ISCC.exe | Select-Object -First 1
+          $version = if ($env:GITHUB_REF -match 'refs/tags/v(.+)') { $Matches[1] } else { $null }
+          if ($version) {
+            powershell -ExecutionPolicy Bypass -File installer/build.ps1 -SkipBrowser -Version $version
+          } else {
+            powershell -ExecutionPolicy Bypass -File installer/build.ps1 -SkipBrowser
           }
-          & $iscc.FullName /Qp "/DAppVersion=$version" installer/aura.iss
           if ($LASTEXITCODE -ne 0) { throw "Installer-Build fehlgeschlagen" }
-          Get-ChildItem dist/*.exe | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,2)}}
 
       - name: Release veroeffentlichen
         if: startsWith(github.ref, 'refs/tags/')

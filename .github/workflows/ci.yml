@@ -16,8 +16,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Bauen
         run: cargo build --release
+      - name: Installer bauen
+        run: cargo build --release -p aura-setup
       - name: Tests
-        run: cargo test --release
+        run: |
+          cargo test --release
+          cargo test --release -p aura-setup
       - name: Clippy
-        run: cargo clippy --release -- -D warnings
+        run: cargo clippy --release --workspace -- -D warnings
         continue-on-error: true

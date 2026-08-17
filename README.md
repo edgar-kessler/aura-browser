@@ -44,13 +44,29 @@ Renderer startet ([`bench/stress_tabs.py`](bench/stress_tabs.py)).
 
 ## Installieren
 
-Fertigen Installer aus den [Releases](https://github.com/edgar-kessler/aura-browser/releases)
-laden (`AuraBrowserSetup-*.exe`) und ausführen. Er installiert pro Benutzer nach
-`%LOCALAPPDATA%\Programs\Aura Browser` — bewusst ohne Administratorrechte, damit
-der eingebaute Updater die Dateien später selbst austauschen kann. Auf Wunsch legt
-er Verknüpfungen an und meldet Aura bei Windows als Browser an, sodass er unter
-*Einstellungen → Standard-Apps* auswählbar ist. Fehlt die WebView2-Laufzeit
-(auf Windows 11 ist sie vorhanden), bietet der Installer an, sie nachzuinstallieren.
+Fertiges Setup aus den [Releases](https://github.com/edgar-kessler/aura-browser/releases)
+laden (`AuraBrowserSetup-*.exe`) und ausführen. Es ist ein eigenes Programm aus
+diesem Repository ([`installer/`](installer)) — kein Inno Setup, kein NSIS —,
+gezeichnet mit denselben Mitteln wie der Browser: ein Fenster, drei Zustände,
+hell oder dunkel wie Windows.
+
+Es installiert pro Benutzer nach `%LOCALAPPDATA%\Programs\Aura Browser` —
+bewusst ohne Administratorrechte, damit der eingebaute Updater die Dateien später
+selbst austauschen kann. Auf Wunsch legt es eine Desktop-Verknüpfung an und
+meldet Aura bei Windows als Browser an, sodass er unter *Einstellungen →
+Standard-Apps* auswählbar ist. Fehlt die WebView2-Laufzeit (auf Windows 11 ist
+sie vorhanden), lädt das Setup sie von Microsoft nach. Eine frühere Installation
+wird an Ort und Stelle aktualisiert; entfernt wird über *Apps & Features* oder
+`uninstall.exe` im Programmordner.
+
+Ohne Fenster, etwa für Skripte:
+
+```bash
+AuraBrowserSetup-0.1.10.exe --silent
+```
+
+Weitere Schalter (`--dir=`, `--no-desktop-icon`, `--no-register`, `--purge`,
+`--lang=`) zeigt `--help`.
 
 Wer lieber nichts installiert: das ZIP aus demselben Release entpacken und
 `aura-browser.exe` starten.
@@ -63,14 +79,23 @@ Voraussetzungen: Rust (stable), die WebView2-Laufzeit (auf Windows 11 vorhanden)
 cargo build --release
 ```
 
-Mit der GNU-Toolchain muss `dlltool` einen Assembler finden — dafür gehört das
-`bin`-Verzeichnis von MinGW in den `PATH`. `WebView2Loader.dll` kopiert
+Mit der GNU-Toolchain muss `dlltool` einen Assembler finden — dafür zeigt
+[`.cargo/config.toml`](.cargo/config.toml) auf Linker und `dlltool` von MinGW
+(Pfade bei Bedarf anpassen). `WebView2Loader.dll` kopiert
 [`build.rs`](build.rs) automatisch neben die Programmdatei.
 
 ```bash
 cargo test --release          # Filter-Engine und Versionsvergleich
 python bench/bench.py         # Vergleich gegen installierte Browser
 python bench/stress_tabs.py   # Speicher bei vielen Tabs
+```
+
+Das fertige Setup baut ein Skript: Browser, dann Installer, dann werden die
+Programmdateien gepackt an den Installer gehängt. Ergebnis ist
+`dist\AuraBrowserSetup-<Version>.exe`.
+
+```bash
+powershell -ExecutionPolicy Bypass -File installer\build.ps1
 ```
 
 ## Aufbau
@@ -86,6 +111,7 @@ python bench/stress_tabs.py   # Speicher bei vielen Tabs
 | [`src/update.rs`](src/update.rs) | Auto-Update über GitHub Releases |
 | [`src/devtools.rs`](src/devtools.rs) | Fernsteuerung: HTTP-Server auf localhost |
 | [`assets/`](assets) | Interne Seiten (`aura://…`), gemeinsames Stylesheet, Basis-Filterliste |
+| [`installer/`](installer) | Das Setup: eigenes Fenster (Direct2D), Nutzlast, Registry, Deinstallation |
 
 ## Fernsteuerung
 

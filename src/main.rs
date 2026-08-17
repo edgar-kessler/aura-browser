@@ -24,6 +24,8 @@ fn main() {
     if update::finish_pending() {
         return;
     }
+    // Nach einem Selbst-Update soll Apps & Features die neue Nummer zeigen.
+    update::sync_registry_version();
 
     // Kopfloser Update-Lauf: prueft, laedt, entpackt und beendet sich. Damit
     // laesst sich das Update per Skript ausloesen und ueberhaupt testen.

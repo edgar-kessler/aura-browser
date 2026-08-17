@@ -1,0 +1,51 @@
+[package]
+name = "aura-setup"
+# Die Version kommt aus der Cargo.toml im Wurzelverzeichnis – Browser und
+# Installer tragen immer dieselbe Nummer.
+version.workspace = true
+edition = "2021"
+build = "build.rs"
+publish = false
+description = "Installer fuer Aura Browser – eigenes Fenster, keine Fremdwerkzeuge"
+
+[[bin]]
+name = "aura-setup"
+path = "src/main.rs"
+
+[dependencies]
+# Deflate zum Packen und Entpacken der Nutzlast. Reines Rust, winzig.
+miniz_oxide = "0.8"
+windows-numerics = "0.3"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_Networking_WinHttp",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_Globalization",
+]
+
+[build-dependencies]
+embed-resource = "2"
