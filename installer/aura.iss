@@ -1,4 +1,4 @@
-; Aura Browser – Installer (Inno Setup 6)
+﻿; Aura Browser – Installer (Inno Setup 6)
 ;
 ; Installiert pro Benutzer nach %LOCALAPPDATA%\Programs\Aura Browser. Das ist
 ; Absicht: der eingebaute Auto-Updater tauscht Dateien im Installationsordner,
@@ -11,7 +11,7 @@
 #define Publisher    "Edgar Kessler"
 #define AppUrl       "https://github.com/edgar-kessler/aura-browser"
 #ifndef AppVersion
-  #define AppVersion "0.1.8"
+  #define AppVersion "0.1.9"
 #endif
 #ifndef SourceDir
   #define SourceDir  "..\dist\payload"
