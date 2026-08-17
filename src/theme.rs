@@ -9,12 +9,13 @@ pub enum ThemeMode {
     System,
 }
 
-/// Eckenradien (DIP). Zurückhaltender als zuvor – näher an shadcn/Stripe:
-/// klare Kanten, kleine Radien, die Ruhe kommt aus Abständen statt aus Rundung.
-pub const R_XS: f32 = 6.0;
-pub const R_SM: f32 = 8.0;
-pub const R_MD: f32 = 10.0;
-pub const R_LG: f32 = 14.0;
+/// Eckenradien (DIP), dieselbe Reihe wie im Stylesheet der internen Seiten.
+/// Näher an shadcn: klare Kanten, kleine Radien, die Ruhe kommt aus Abständen
+/// statt aus Rundung.
+pub const R_XS: f32 = 4.0;
+pub const R_SM: f32 = 6.0;
+pub const R_MD: f32 = 8.0;
+pub const R_LG: f32 = 12.0;
 
 #[derive(Clone)]
 pub struct Theme {

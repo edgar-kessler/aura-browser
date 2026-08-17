@@ -112,6 +112,18 @@ class Aura:
     def key(self, vk: int, ctrl=False, shift=False, alt=False) -> dict:
         return self._call("/key", {"vk": vk, "ctrl": ctrl, "shift": shift, "alt": alt})
 
+    def mouse(self, action: str, x: int = 0, y: int = 0) -> dict:
+        """Einzelner Maus-Schritt: down, move oder up."""
+        return self._call("/mouse", {"action": action, "x": x, "y": y})
+
+    def drag(self, x0: int, y0: int, x1: int, y1: int, steps: int = 12) -> dict:
+        """Zieht von (x0,y0) nach (x1,y1) - z. B. die Kante der Seitenleiste."""
+        self.mouse("move", x0, y0)
+        self.mouse("down", x0, y0)
+        for i in range(1, steps + 1):
+            self.mouse("move", x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps)
+        return self.mouse("up", x1, y1)
+
     # --- Seite -----------------------------------------------------------
     def eval(self, js: str):
         return self._call("/eval", {"js": js}).get("result")

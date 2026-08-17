@@ -40,7 +40,15 @@ const TIMER_SESSION: usize = 4;
 
 const TOPBAR_H: f32 = 56.0;
 const SB_COLLAPSED: f32 = 64.0;
-const SB_EXPANDED: f32 = 284.0;
+/// Voreingestellte Breite der aufgeklappten Leiste. Der Nutzer zieht sie an
+/// der Kante auf jede Breite dazwischen; gespeichert wird sie als `sidebar_width`.
+const SB_EXPANDED: f32 = 260.0;
+const SB_MIN: f32 = 180.0;
+const SB_MAX: f32 = 460.0;
+/// Unterhalb dieser Breite gilt die Leiste als eingeklappt.
+const SB_SNAP: f32 = 150.0;
+/// Breite des Greifstreifens an der Kante.
+const SB_GRIP: f32 = 5.0;
 const CAP_W: f32 = 40.0;
 const CAP_H: f32 = 34.0;
 
@@ -167,6 +175,8 @@ pub enum Hot {
     Plus,
     Tab(usize),
     TabClose(usize),
+    /// Der Greifstreifen an der rechten Kante der Seitenleiste.
+    SbEdge,
 }
 
 #[derive(Default)]
@@ -189,6 +199,8 @@ pub struct Layout {
     pub tab_close: Vec<(usize, D2D_RECT_F)>,
     /// Scroll viewport of the tab list.
     pub tab_view: D2D_RECT_F,
+    /// Greifstreifen an der rechten Kante der Seitenleiste.
+    pub sb_edge: D2D_RECT_F,
     pub content: RECT, // physical px
 }
 
@@ -216,6 +228,10 @@ pub struct App {
 
     pub sidebar_w: f32,
     pub sidebar_target: f32,
+    /// Vom Nutzer eingestellte Breite der aufgeklappten Leiste.
+    pub sb_wide: f32,
+    /// Läuft gerade ein Ziehen an der Kante? Enthält den Griffversatz.
+    pub sb_drag: Option<f32>,
     /// Scroll offset of the tab list in DIP (0 = top). Grows with many tabs.
     pub tab_scroll: f32,
     pub tab_scroll_target: f32,
@@ -470,6 +486,8 @@ impl App {
             split: None,
             sidebar_w: SB_COLLAPSED,
             sidebar_target: SB_COLLAPSED,
+            sb_wide: SB_EXPANDED,
+            sb_drag: None,
             tab_scroll: 0.0,
             tab_scroll_target: 0.0,
             tab_scroll_max: 0.0,
@@ -554,6 +572,20 @@ impl App {
         }
         if app.glass {
             app.theme.glassify();
+        }
+
+        // Breite und Zustand der Seitenleiste, wie der Nutzer sie verlassen hat.
+        app.sb_wide = app
+            .storage
+            .get_setting("sidebar_width", "")
+            .parse::<f32>()
+            .map(|v| v.clamp(SB_MIN, SB_MAX))
+            .unwrap_or(SB_EXPANDED);
+        if app.storage.get_setting("sidebar_open", "0") == "1" {
+            app.expanded = true;
+            app.sidebar_w = app.sb_wide;
+            app.sidebar_target = app.sb_wide;
+            app.content_left = app.sb_wide;
         }
 
         // Show the chrome before the (slow) WebView2 environment comes up, so the
@@ -749,8 +781,31 @@ impl App {
                 WM_LBUTTONDOWN => {
                     let hot = self.hot;
                     self.pressed = hot;
+                    if hot == Hot::SbEdge {
+                        self.begin_sidebar_drag(x_lparam(l) as f32 / self.scale);
+                        return LRESULT(0);
+                    }
                     self.on_click(hot);
                     return LRESULT(0);
+                }
+                WM_LBUTTONUP => {
+                    self.end_sidebar_drag();
+                    return LRESULT(0);
+                }
+                WM_CAPTURECHANGED => {
+                    self.sb_drag = None;
+                    return LRESULT(0);
+                }
+                WM_SETCURSOR => {
+                    // Waagerechter Pfeil über dem Greifstreifen – ohne ihn ist
+                    // nicht zu erkennen, dass sich hier etwas ziehen lässt.
+                    if (l.0 as u32 & 0xFFFF) == HTCLIENT as u32
+                        && (self.sb_drag.is_some() || self.hot == Hot::SbEdge)
+                    {
+                        let _ = SetCursor(LoadCursorW(None, IDC_SIZEWE).ok());
+                        return LRESULT(1);
+                    }
+                    return DefWindowProcW(hwnd, msg, w, l);
                 }
                 WM_RBUTTONUP => {
                     self.on_right_click(x_lparam(l) as f32 / self.scale, y_lparam(l) as f32 / self.scale);
@@ -763,7 +818,12 @@ impl App {
                     return LRESULT(0);
                 }
                 WM_LBUTTONDBLCLK => {
-                    if self.hot == Hot::Omnibox {
+                    if self.hot == Hot::SbEdge {
+                        // Doppelklick auf die Kante klappt um, wie in Editoren.
+                        self.sb_drag = None;
+                        let _ = ReleaseCapture();
+                        self.toggle_sidebar();
+                    } else if self.hot == Hot::Omnibox {
                         self.begin_edit();
                     } else if self.hot == Hot::None && y_lparam(l) as f32 / self.scale < TOPBAR_H {
                         // Double-click on empty chrome toggles maximize, like a titlebar.
@@ -966,14 +1026,30 @@ impl App {
         l.omnibox = rect_f(ob_left, 9.0, (ob_right - ob_left).max(200.0), 38.0);
         l.star = rect_f(ob_right - 42.0, 12.0, 32.0, 32.0);
 
-        // Sidebar. The tab list scrolls: with many tabs it would otherwise run
-        // straight past the bottom edge and off the window.
-        l.orb = rect_f(12.0, 10.0, 40.0, 40.0);
-        let collapsed = self.sidebar_w < 150.0;
-        let list_top = 66.0;
-        let list_bottom = h - 104.0; // room for "new tab" + settings
-        // Zeilenraster inklusive Abstand; ausgeklappt darf es luftiger sein.
-        let row_h = if collapsed { 50.0 } else { 46.0 };
+        // Seitenleiste. Ein durchgehender Rand (PAD) links und rechts, alle
+        // Zeilen sitzen darin — eingeklappt zentriert, ausgeklappt bündig.
+        let collapsed = self.sidebar_w < SB_SNAP;
+        const PAD: f32 = 8.0;
+        let inner_w = (sw - PAD * 2.0).max(1.0);
+        l.orb = if collapsed {
+            rect_f((sw - 36.0) / 2.0, 12.0, 36.0, 36.0)
+        } else {
+            rect_f(PAD, 12.0, inner_w, 36.0)
+        };
+        // Der Greifstreifen liegt genau auf der Kante, halb innen, halb außen.
+        l.sb_edge = rect_f(sw - SB_GRIP, 0.0, SB_GRIP * 2.0, h);
+
+        // Die Fußzeile steht fest am unteren Rand: "Neuer Tab" und
+        // "Einstellungen". Die Liste bekommt genau den Platz darüber — so kann
+        // sie auch bei hundert Tabs nicht in die Schaltflächen laufen.
+        let gear_y = h - 44.0;
+        let plus_y = gear_y - 40.0;
+        l.plus = rect_f(PAD, plus_y, inner_w, 36.0);
+        l.gear = rect_f(PAD, gear_y, inner_w, 36.0);
+        let list_top = 58.0;
+        let list_bottom = (plus_y - 10.0).max(list_top + 1.0);
+        // Zeilenraster inklusive Abstand.
+        let row_h = if collapsed { 44.0 } else { 38.0 };
         let content_h: f32 = self.tabs.iter().map(|t| row_h * t.appear).sum();
         let view_h = (list_bottom - list_top).max(row_h);
         self.tab_scroll_max = (content_h - view_h).max(0.0);
@@ -989,22 +1065,22 @@ impl App {
             // and painting stay O(visible) even with hundreds of tabs.
             let visible = y + slot > list_top && y < list_bottom && tab.appear > 0.02;
             if visible {
-                let inner = (slot - 6.0).max(1.0);
-                if collapsed || tab.pinned {
-                    l.tab_rows.push((i, rect_f(10.0, y, sw - 20.0, inner.min(44.0))));
+                let hgt = (slot - 4.0).max(1.0).min(if collapsed { 40.0 } else { 34.0 });
+                let row = if collapsed {
+                    rect_f((sw - 40.0) / 2.0, y, 40.0_f32.min(inner_w), hgt)
                 } else {
-                    let hgt = inner.min(40.0);
-                    l.tab_rows.push((i, rect_f(10.0, y, sw - 20.0, hgt)));
-                    if tab.appear > 0.9 {
-                        l.tab_close.push((i, rect_f(sw - 44.0, y + (hgt - 28.0) / 2.0, 28.0, 28.0)));
-                    }
+                    rect_f(PAD, y, inner_w, hgt)
+                };
+                l.tab_rows.push((i, row));
+                if !collapsed && !tab.pinned && tab.appear > 0.9 {
+                    l.tab_close.push((
+                        i,
+                        rect_f(row.right - 28.0, y + (hgt - 24.0) / 2.0, 24.0, 24.0),
+                    ));
                 }
             }
             y += slot;
         }
-        let list_end = (list_top + content_h - self.tab_scroll).min(list_bottom);
-        l.plus = rect_f(10.0, list_end + 6.0, sw - 20.0, 40.0);
-        l.gear = rect_f(10.0, h - 52.0, sw - 20.0, 40.0);
 
         // Place the active-tab indicator without animating on the first layout.
         if !self.ind_ready {
@@ -1294,7 +1370,7 @@ impl App {
         unsafe {
             if t > 0.0 {
                 if let Ok(b) = brush(rt, theme.hover_at(t)) {
-                    rt.FillRoundedRectangle(&rounded(r, R_SM), &b);
+                    rt.FillRoundedRectangle(&rounded(r, R_MD), &b);
                 }
             }
             let c = if on { theme.accent_f } else { theme.text_dim };
@@ -1538,12 +1614,13 @@ impl App {
     }
 
     fn paint_sidebar(&mut self, rt: &ID2D1RenderTarget, theme: &Theme, h: f32) {
-        let collapsed = self.sidebar_w < 150.0;
+        let collapsed = self.sidebar_w < SB_SNAP;
         unsafe {
-            // Aura orb (radial gradient) — expand/collapse button.
+            // Kopfzeile: die Kugel schaltet um, daneben der Namenszug. Der
+            // ganze Bereich ist im aufgeklappten Zustand die Schaltfläche.
             let orb = self.layout.orb;
-            let cx = (orb.left + orb.right) / 2.0;
             let cy = (orb.top + orb.bottom) / 2.0;
+            let cx = if collapsed { (orb.left + orb.right) / 2.0 } else { orb.left + 18.0 };
             let orb_t = self.hover_t(Hot::Orb);
             if orb_t > 0.0 {
                 if let Ok(b) = brush(rt, theme.hover_at(orb_t)) {
@@ -1557,16 +1634,15 @@ impl App {
             if let Ok(gs) = rt.CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP) {
                 if let Ok(gb) = rt.CreateRadialGradientBrush(
                     &D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES {
-                        center: pt(cx - 4.0, cy - 5.0),
+                        center: pt(cx - 3.0, cy - 4.0),
                         gradientOriginOffset: pt(0.0, 0.0),
-                        radiusX: 18.0,
-                        radiusY: 18.0,
+                        radiusX: 16.0,
+                        radiusY: 16.0,
                     },
                     None,
                     &gs,
                 ) {
-                    // Orb breathes a touch on hover.
-                    rt.FillEllipse(&ellipse(cx, cy, 13.0 + orb_t * 1.5), &gb);
+                    rt.FillEllipse(&ellipse(cx, cy, 11.0 + orb_t * 1.0), &gb);
                 }
             }
             if !collapsed {
@@ -1577,9 +1653,9 @@ impl App {
                     rt.DrawText(
                         &t,
                         &self.fmt_title,
-                        &rect_f(orb.right + 10.0, orb.top, 120.0, orb.bottom - orb.top),
+                        &rect_f(cx + 20.0, orb.top, (orb.right - cx - 26.0).max(1.0), orb.bottom - orb.top),
                         &b,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        D2D1_DRAW_TEXT_OPTIONS_CLIP,
                         DWRITE_MEASURING_MODE_NATURAL,
                     );
                 }
@@ -1602,7 +1678,8 @@ impl App {
             // Clip the list so scrolled rows never bleed over the footer buttons.
             let view = self.layout.tab_view;
             rt.PushAxisAlignedClip(&view, D2D1_ANTIALIAS_MODE_ALIASED);
-            // Active-tab pill indicator, sliding between rows.
+            // Aktive Zeile: gefüllte Fläche, die zwischen den Zeilen wandert.
+            // Der Akzentbalken sitzt bündig an der Fensterkante.
             if self.ind_ready && self.ind_h > 1.0 {
                 if let Some((_, ar)) = self.layout.tab_rows.iter().find(|(i, _)| *i == self.active) {
                     let inset = ((ar.bottom - ar.top) - self.ind_h) / 2.0;
@@ -1617,7 +1694,7 @@ impl App {
                     }
                     if let Ok(b) = brush(rt, theme.accent_f) {
                         rt.FillRoundedRectangle(
-                            &rounded(rect_f(pill.left - 7.0, self.ind_y, 3.0, self.ind_h), 1.5),
+                            &rounded(rect_f(0.0, self.ind_y + 1.0, 2.0, (self.ind_h - 2.0).max(1.0)), 1.0),
                             &b,
                         );
                     }
@@ -1658,11 +1735,11 @@ impl App {
                     }
                 }
                 // favicon
-                let icon_size = if collapsed || tab.pinned { 24.0 } else { 19.0 };
+                let icon_size = if collapsed || tab.pinned { 20.0 } else { 16.0 };
                 let ix = if collapsed || tab.pinned {
                     (r.left + r.right) / 2.0 - icon_size / 2.0
                 } else {
-                    r.left + 16.0
+                    r.left + 10.0
                 };
                 let iy = (r.top + r.bottom) / 2.0 - icon_size / 2.0;
                 let icon_rect = rect_f(ix, iy, icon_size, icon_size);
@@ -1675,10 +1752,10 @@ impl App {
                         None,
                     );
                 } else {
-                    // fallback: rounded square with first letter
+                    // Ersatz: kleines Quadrat mit dem Anfangsbuchstaben.
                     let letter_bg = if tab.is_internal { theme.accent_soft } else { theme.hover };
                     if let Ok(b) = brush(rt, letter_bg) {
-                        rt.FillRoundedRectangle(&rounded(icon_rect, R_XS * 0.75), &b);
+                        rt.FillRoundedRectangle(&rounded(icon_rect, 3.0), &b);
                     }
                     let ch = tab
                         .domain()
@@ -1723,10 +1800,18 @@ impl App {
                         let t: Vec<u16> = title.encode_utf16().collect();
                         self.fmt_ui.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
                         self.fmt_ui.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
+                        // Platz für das Schließkreuz nur, wenn die Zeile berührt
+                        // wird — sonst darf der Titel bis zum Rand laufen.
+                        let right_gap = if hovered || self.hot == Hot::TabClose(i) { 34.0 } else { 10.0 };
                         rt.DrawText(
                             &t,
                             &self.fmt_ui,
-                            &rect_f(r.left + 42.0, r.top, r.right - r.left - 78.0, r.bottom - r.top),
+                            &rect_f(
+                                r.left + 34.0,
+                                r.top,
+                                (r.right - r.left - 34.0 - right_gap).max(1.0),
+                                r.bottom - r.top,
+                            ),
                             &b,
                             D2D1_DRAW_TEXT_OPTIONS_CLIP,
                             DWRITE_MEASURING_MODE_NATURAL,
@@ -1780,65 +1865,74 @@ impl App {
                 }
             }
 
-            // plus button
+            // Fußzeile, durch eine Haarlinie von der Liste abgesetzt.
             let plus = self.layout.plus;
-            let plus_t = self.hover_t(Hot::Plus);
-            if plus_t > 0.0 {
-                if let Ok(b) = brush(rt, theme.hover_at(plus_t)) {
-                    rt.FillRoundedRectangle(&rounded(plus, R_MD), &b);
-                }
+            if let Ok(b) = brush(rt, theme.border) {
+                let y = (plus.top - 6.0).round() + 0.5;
+                rt.FillRectangle(&rect_f(plus.left, y, plus.right - plus.left, 1.0), &b);
             }
-            if let Ok(b) = brush(rt, theme.text_dim) {
-                let t: Vec<u16> = "\u{E710}".encode_utf16().collect();
-                self.fmt_icon.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).ok();
-                self.fmt_icon.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
-                let r = if collapsed { plus } else { rect_f(plus.left, plus.top, 40.0, plus.bottom - plus.top) };
-                rt.DrawText(&t, &self.fmt_icon, &r, &b, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
-                if !collapsed {
-                    if let Ok(b2) = brush(rt, theme.text) {
-                        let t2: Vec<u16> = "Neuer Tab".encode_utf16().collect();
-                        self.fmt_ui.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
-                        rt.DrawText(
-                            &t2,
-                            &self.fmt_ui,
-                            &rect_f(plus.left + 40.0, plus.top, plus.right - plus.left - 44.0, plus.bottom - plus.top),
-                            &b2,
-                            D2D1_DRAW_TEXT_OPTIONS_NONE,
-                            DWRITE_MEASURING_MODE_NATURAL,
-                        );
-                    }
-                }
-            }
+            self.sidebar_row(rt, theme, plus, Hot::Plus, "\u{E710}", "Neuer Tab", collapsed);
+            self.sidebar_row(rt, theme, self.layout.gear, Hot::Gear, "\u{E713}", "Einstellungen", collapsed);
 
-            // settings gear
-            let gear = self.layout.gear;
-            let gear_t = self.hover_t(Hot::Gear);
-            if gear_t > 0.0 {
-                if let Ok(b) = brush(rt, theme.hover_at(gear_t)) {
-                    rt.FillRoundedRectangle(&rounded(gear, R_MD), &b);
-                }
+            // Trennkante zum Inhalt, plus der Greifstreifen: er zeigt sich nur,
+            // wenn der Zeiger darauf liegt oder gezogen wird.
+            let edge_x = self.sidebar_w.round() - 0.5;
+            if let Ok(b) = brush(rt, theme.border) {
+                rt.FillRectangle(&rect_f(edge_x, TOPBAR_H, 1.0, h - TOPBAR_H), &b);
             }
-            if let Ok(b) = brush(rt, theme.text_dim) {
-                let t: Vec<u16> = "\u{E713}".encode_utf16().collect();
-                let r = if collapsed { gear } else { rect_f(gear.left, gear.top, 40.0, gear.bottom - gear.top) };
-                rt.DrawText(&t, &self.fmt_icon, &r, &b, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
-                if !collapsed {
-                    if let Ok(b2) = brush(rt, theme.text) {
-                        let t2: Vec<u16> = "Einstellungen".encode_utf16().collect();
-                        self.fmt_ui.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
-                        rt.DrawText(
-                            &t2,
-                            &self.fmt_ui,
-                            &rect_f(gear.left + 40.0, gear.top, gear.right - gear.left - 44.0, gear.bottom - gear.top),
-                            &b2,
-                            D2D1_DRAW_TEXT_OPTIONS_NONE,
-                            DWRITE_MEASURING_MODE_NATURAL,
-                        );
-                    }
+            let grip_t = if self.sb_drag.is_some() { 1.0 } else { self.hover_t(Hot::SbEdge) };
+            if grip_t > 0.0 {
+                let mut c = theme.accent_f;
+                c.a = 0.55 * grip_t;
+                if let Ok(b) = brush(rt, c) {
+                    rt.FillRectangle(&rect_f(edge_x - 0.5, 0.0, 2.0, h), &b);
                 }
             }
         }
-        let _ = h;
+    }
+
+    /// Eine Zeile der Fußleiste: Symbol, im aufgeklappten Zustand mit Text.
+    fn sidebar_row(
+        &self,
+        rt: &ID2D1RenderTarget,
+        theme: &Theme,
+        r: D2D_RECT_F,
+        hot: Hot,
+        glyph: &str,
+        label: &str,
+        collapsed: bool,
+    ) {
+        unsafe {
+            let t = self.hover_t(hot);
+            if t > 0.0 {
+                if let Ok(b) = brush(rt, theme.hover_at(t)) {
+                    rt.FillRoundedRectangle(&rounded(r, R_SM), &b);
+                }
+            }
+            let h = r.bottom - r.top;
+            if let Ok(b) = brush(rt, theme.text_dim) {
+                let g: Vec<u16> = glyph.encode_utf16().collect();
+                self.fmt_icon.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).ok();
+                self.fmt_icon.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
+                let ir = if collapsed { r } else { rect_f(r.left, r.top, 34.0, h) };
+                rt.DrawText(&g, &self.fmt_icon, &ir, &b, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+            }
+            if !collapsed {
+                if let Ok(b) = brush(rt, theme.text) {
+                    let l: Vec<u16> = label.encode_utf16().collect();
+                    self.fmt_ui.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
+                    self.fmt_ui.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
+                    rt.DrawText(
+                        &l,
+                        &self.fmt_ui,
+                        &rect_f(r.left + 34.0, r.top, (r.right - r.left - 42.0).max(1.0), h),
+                        &b,
+                        D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
+            }
+        }
     }
 
     // ---------------- input handling ----------------
@@ -1856,6 +1950,9 @@ impl App {
         if inside(&l.menu) { return Hot::Menu; }
         if inside(&l.star) { return Hot::Star; }
         if inside(&l.omnibox) { return Hot::Omnibox; }
+        // Der Greifstreifen liegt über allem in der Leiste, sonst wäre er unter
+        // den Zeilen am Rand nicht zu treffen.
+        if inside(&l.sb_edge) { return Hot::SbEdge; }
         if inside(&l.orb) { return Hot::Orb; }
         if inside(&l.plus) { return Hot::Plus; }
         if inside(&l.gear) { return Hot::Gear; }
@@ -1893,12 +1990,16 @@ impl App {
     }
 
     fn on_mouse_move(&mut self, x: f32, y: f32) {
+        if self.sb_drag.is_some() {
+            self.drag_sidebar(x);
+            return;
+        }
         // Optional: sidebar unfolds while the pointer rests on it.
         if self.storage.get_setting("sidebar_hover", "0") == "1" && !self.editing {
             let inside = x < self.sidebar_w + 4.0;
             if inside && !self.expanded {
                 self.toggle_sidebar();
-            } else if !inside && self.expanded && x > SB_EXPANDED {
+            } else if !inside && self.expanded && x > self.sb_wide {
                 self.toggle_sidebar();
             }
         }
@@ -1988,6 +2089,8 @@ impl App {
             Hot::Star => self.toggle_bookmark(),
             Hot::Omnibox => self.begin_edit(),
             Hot::Orb => self.toggle_sidebar(),
+            // Der Greifstreifen wird gezogen, nicht geklickt.
+            Hot::SbEdge => {}
             Hot::Plus => { self.new_tab("aura://start", true); }
             Hot::Gear => self.open_internal("aura://settings"),
             Hot::Tab(i) => self.activate_tab(i),
@@ -2009,7 +2112,9 @@ impl App {
     // ---------------- sidebar ----------------
     fn toggle_sidebar(&mut self) {
         self.expanded = !self.expanded;
-        self.sidebar_target = if self.expanded { SB_EXPANDED } else { SB_COLLAPSED };
+        self.sidebar_target = if self.expanded { self.sb_wide } else { SB_COLLAPSED };
+        self.storage
+            .set_setting("sidebar_open", if self.expanded { "1" } else { "0" });
         // Reflow the page once, at the wider of the two edges, so the sidebar
         // always animates over empty chrome instead of pushing the web content.
         self.content_left = self.sidebar_w.max(self.sidebar_target);
@@ -2024,6 +2129,56 @@ impl App {
             self.relayout();
             self.start_anim();
         }
+    }
+
+    /// Beginnt das Ziehen an der Kante. Aus dem eingeklappten Zustand heraus
+    /// zieht der Griff die Leiste direkt auf – ohne Umweg über den Umschalter.
+    fn begin_sidebar_drag(&mut self, x: f32) {
+        if !self.expanded {
+            self.expanded = true;
+            self.sidebar_target = self.sb_wide.max(SB_MIN);
+            self.sidebar_w = SB_COLLAPSED;
+        }
+        self.sb_drag = Some(self.sidebar_w - x);
+        unsafe {
+            SetCapture(self.hwnd);
+        }
+    }
+
+    /// Zieht die Kante mit. Kein Weichzeichnen der Breite: die Leiste muss am
+    /// Zeiger kleben, sonst fühlt sich das Ziehen schwammig an.
+    fn drag_sidebar(&mut self, x: f32) {
+        let Some(off) = self.sb_drag else { return };
+        let raw = x + off;
+        // Unter der Schwelle rastet die Leiste sichtbar in den schmalen Zustand.
+        let w = if raw < SB_SNAP { SB_COLLAPSED } else { raw.clamp(SB_MIN, SB_MAX) };
+        if (w - self.sidebar_w).abs() < 0.5 {
+            return;
+        }
+        self.sidebar_w = w;
+        self.sidebar_target = w;
+        self.content_left = w;
+        self.expanded = w > SB_SNAP;
+        self.relayout();
+        self.paint();
+    }
+
+    fn end_sidebar_drag(&mut self) {
+        if self.sb_drag.take().is_none() {
+            return;
+        }
+        unsafe {
+            let _ = ReleaseCapture();
+        }
+        if self.expanded {
+            self.sb_wide = self.sidebar_w;
+            self.storage
+                .set_setting("sidebar_width", &format!("{:.0}", self.sb_wide));
+        }
+        self.storage
+            .set_setting("sidebar_open", if self.expanded { "1" } else { "0" });
+        self.relayout();
+        self.paint();
     }
 
     // ---------------- shield ----------------
@@ -2115,6 +2270,36 @@ impl App {
                 self.set_hot(hot);
                 self.on_click(hot);
                 Response::json(json!({ "ok": true, "hit": format!("{hot:?}") }))
+            }
+            "/mouse" => {
+                // Einzelne Maus-Schritte, damit sich auch Ziehen nachstellen
+                // lässt – etwa das Verbreitern der Seitenleiste.
+                let (x, y) = (num("x").unwrap_or(0) as f32, num("y").unwrap_or(0) as f32);
+                match arg("action").unwrap_or_default().as_str() {
+                    "move" => self.on_mouse_move(x, y),
+                    "down" => {
+                        let hot = self.hit(x, y);
+                        self.set_hot(hot);
+                        self.pressed = hot;
+                        if hot == Hot::SbEdge {
+                            self.begin_sidebar_drag(x);
+                        } else {
+                            self.on_click(hot);
+                        }
+                    }
+                    "up" => self.end_sidebar_drag(),
+                    _ => {
+                        crate::devtools::put_response(Response::error(
+                            400,
+                            "action muss down, move oder up sein",
+                        ));
+                        return;
+                    }
+                }
+                Response::json(json!({
+                    "ok": true, "hit": format!("{:?}", self.hot),
+                    "sidebar": self.sidebar_w,
+                }))
             }
             "/key" => {
                 let vk = num("vk").unwrap_or(0) as u32;
