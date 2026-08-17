@@ -45,6 +45,8 @@ pub struct Tab {
     /// man ein schwarzes Rechteck. Bis dahin legt das Fenster seine eigene
     /// Farbe darunter.
     pub painted: bool,
+    /// Wann zuletzt nach einem Prozessabsturz neu geladen wurde.
+    pub last_recover: u64,
 }
 
 impl Tab {
@@ -78,6 +80,7 @@ impl Tab {
             appear: 0.0,
             closing: false,
             painted: false,
+            last_recover: 0,
         }
     }
 
@@ -637,6 +640,26 @@ pub fn attach_events(
         }
         guards.push(Box::new(h));
     }
+
+    // --- Prozess der Ansicht abgestürzt oder eingefroren ---
+    // Ohne Reaktion bleibt im Inhaltsbereich ein leeres Loch: der Renderer
+    // ist weg, WebView2 zeigt von sich aus keine Fehlerseite. Also melden;
+    // die Anwendung lädt neu oder legt die Ansicht neu an — nicht hier im
+    // Ereignis, sondern nachgeschaltet im UI-Thread.
+    let h = ProcessFailedEventHandler::create(Box::new(move |_wv, args| {
+        if let Some(args) = args {
+            let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND_UNKNOWN_PROCESS_EXITED;
+            unsafe {
+                let _ = args.ProcessFailedKind(&mut kind);
+            }
+            post(AppMsg::ProcessFailed { tab: tab_id, kind: kind.0 });
+        }
+        Ok(())
+    }));
+    unsafe {
+        let _ = webview.add_ProcessFailed(&h, &mut token);
+    }
+    guards.push(Box::new(h));
 
     // --- keyboard shortcuts inside web content ---
     let h = AcceleratorKeyPressedEventHandler::create(Box::new(move |_ctl, args| {

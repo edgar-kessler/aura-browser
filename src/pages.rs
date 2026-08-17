@@ -150,7 +150,11 @@ pub fn send_init(app: &App, tab_id: u32) {
                 "glass": s.get_setting("glass", "1"),
                 "tab_layout": s.get_setting("tab_layout", "side"),
                 "glass_style": s.get_setting("glass_style", "acrylic"),
-                "transparency": if crate::theme::system_transparency() { "1" } else { "0" },
+                // Warum Glas gerade (nicht) geht — die Seite formuliert daraus den Hinweis.
+                "glass_active": app.glass,
+                "glass_possible": app.glass_possible(),
+                "effects": app.effects_on(),
+                "sidebar_width": s.get_setting("sidebar_width", ""),
             })
         }
         "reading" => {
@@ -432,9 +436,14 @@ pub fn handle_message(app: &mut App, tab_id: u32, json_str: &str) {
                     app.paint();
                 }
                 "glass" | "glass_style" => {
-                    // Takes effect on the next start: the window style and the
-                    // composition surface are fixed at creation time.
+                    // Sofort: Systemhintergrund und Alphawerte lassen sich im
+                    // laufenden Betrieb umstellen, die Kompositionsfläche hat
+                    // das Fenster ohnehin.
+                    let wanted = app.storage.get_setting("glass", "1") == "1";
+                    let style = app.storage.get_setting("glass_style", "acrylic");
+                    app.set_glass(wanted, &style);
                 }
+                "sidebar_hover" => app.set_sidebar_hover(value == "1"),
                 "default_zoom" => {
                     if let Ok(z) = value.parse::<f64>() {
                         app.zoom_to(z.clamp(50.0, 250.0) / 100.0);

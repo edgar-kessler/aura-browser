@@ -151,6 +151,12 @@ pub struct CompDevice {
 
 /// A DirectComposition-backed surface: a per-pixel-alpha swap chain hung off a
 /// composition visual. This is what lets Mica/Acrylic shine through the chrome.
+///
+/// Der Baum hängt *unter* den Kindfenstern (`CreateTargetForHwnd(…, false)`):
+/// die Seite (ein WebView2-Kindfenster) liegt also über unserer Fläche. So darf
+/// die Oberfläche das ganze Fenster deckend grundieren — wo die Seite ist,
+/// verdeckt sie das; wo sie (noch) fehlt, weil ein Tab gerade wechselt oder
+/// das Fenster wächst, sieht man unsere Farbe statt des Schreibtischs.
 pub struct Composition {
     pub dc: ID2D1DeviceContext,
     swap: IDXGISwapChain1,
@@ -159,6 +165,27 @@ pub struct Composition {
     _visual: IDCompositionVisual,
     size: (u32, u32),
     dpi: f32,
+    /// Das Gerät ist verloren gegangen (Treiber-Reset, Aufwachen, Monitor
+    /// umgesteckt). Ab jetzt hilft nur ein Neuaufbau von Gerät und Fläche.
+    pub lost: bool,
+}
+
+/// Ergebnis eines Bildes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Frame {
+    Ok,
+    /// Zeichnen fehlgeschlagen, Gerät aber noch da — Bild einfach verwerfen.
+    Skipped,
+    /// Gerät weg — Aufrufer muss `Composition` und `CompDevice` neu anlegen.
+    DeviceLost,
+}
+
+/// Fehlercodes, die „Gerät ist weg“ bedeuten.
+fn is_device_lost(hr: windows::core::HRESULT) -> bool {
+    hr == DXGI_ERROR_DEVICE_REMOVED
+        || hr == DXGI_ERROR_DEVICE_RESET
+        || hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR
+        || hr == windows::Win32::Foundation::D2DERR_RECREATE_TARGET
 }
 
 impl Gfx {
@@ -208,7 +235,9 @@ impl Gfx {
                 Stereo: false.into(),
                 SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
                 BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-                BufferCount: 2,
+                // Drei Puffer: einer beim DWM, einer wartet, einer wird
+                // gezeichnet — so blockiert Present(0) praktisch nie.
+                BufferCount: 3,
                 Scaling: DXGI_SCALING_STRETCH,
                 SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
                 AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
@@ -218,7 +247,8 @@ impl Gfx {
                 .CreateSwapChainForComposition(&dev.d3d, &desc, None)
                 .ok()?;
             let comp: IDCompositionDevice = DCompositionCreateDevice(&dev.dxgi).ok()?;
-            let target = comp.CreateTargetForHwnd(hwnd, true).ok()?;
+            // `false`: unser Baum liegt hinter den Kindfenstern, siehe oben.
+            let target = comp.CreateTargetForHwnd(hwnd, false).ok()?;
             let visual = comp.CreateVisual().ok()?;
             visual.SetContent(&swap).ok()?;
             target.SetRoot(&visual).ok()?;
@@ -231,6 +261,7 @@ impl Gfx {
                 _visual: visual,
                 size: (width.max(1), height.max(1)),
                 dpi: 96.0 * scale,
+                lost: false,
             })
         }
     }
@@ -245,12 +276,13 @@ impl Composition {
         }
         unsafe {
             self.dc.SetTarget(None);
-            if self
+            match self
                 .swap
                 .ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))
-                .is_ok()
             {
-                self.size = (w, h);
+                Ok(()) => self.size = (w, h),
+                Err(e) if is_device_lost(e.code()) => self.lost = true,
+                Err(_) => {}
             }
         }
     }
@@ -278,14 +310,55 @@ impl Composition {
     }
 
     /// Ends the batch and pushes the frame to the compositor.
-    pub fn end(&self) -> bool {
+    ///
+    /// `Present(0)`: nicht auf den nächsten Bildwechsel warten. Bei einer
+    /// Kompositionskette entscheidet ohnehin der DWM, wann das Bild auf den
+    /// Schirm kommt; ein neueres Bild ersetzt ein noch nicht gezeigtes. Mit
+    /// Sync-Intervall 1 stand der UI-Thread bei jedem Bild bis zu 16 ms —
+    /// bei jeder Mausbewegung, jedem Animationsschritt, jedem WM_SIZE. Das war
+    /// der Grund, warum sich alles zäh anfühlte.
+    ///
+    /// `sync`: nach dem Abschicken warten, bis der DWM das nächste Bild
+    /// zusammengesetzt hat (`DwmFlush`). Beim Ziehen am Fensterrand hält das
+    /// Rahmen und Inhalt zusammen — sonst hinkt die Fläche dem Rahmen ein,
+    /// zwei Bilder hinterher, und man sieht am Rand die Fläche dahinter.
+    /// Dazu `DXGI_PRESENT_RESTART`: ein noch wartendes Bild in alter Größe
+    /// wird verworfen statt gezeigt. (So macht es Raph Levien in
+    /// „Smooth resize“, und so machen es druid und Zed.)
+    pub fn end(&mut self, sync: bool) -> Frame {
         unsafe {
-            let ok = self.dc.EndDraw(None, None).is_ok();
+            let drawn = self.dc.EndDraw(None, None);
             self.dc.SetTarget(None);
-            let _ = self.swap.Present(1, DXGI_PRESENT(0));
-            let _ = self.comp.Commit();
-            ok
+            if let Err(e) = &drawn {
+                if is_device_lost(e.code()) {
+                    self.lost = true;
+                    return Frame::DeviceLost;
+                }
+                return Frame::Skipped;
+            }
+            let flags = if sync { DXGI_PRESENT_RESTART } else { DXGI_PRESENT(0) };
+            let hr = self.swap.Present(0, flags);
+            if hr.is_err() && is_device_lost(hr) {
+                self.lost = true;
+                return Frame::DeviceLost;
+            }
+            if self.comp.Commit().is_err() {
+                // Der Kompositionsdienst kennt unser Gerät nicht mehr.
+                self.lost = true;
+                return Frame::DeviceLost;
+            }
+            if sync {
+                let _ = windows::Win32::Graphics::Dwm::DwmFlush();
+            }
+            Frame::Ok
         }
+    }
+
+    /// Lebt das Gerät noch? Der Kompositionsdienst meldet einen Neustart
+    /// (etwa nach einem Absturz des DWM) nur so — Present liefert dann noch
+    /// lange Erfolg, während auf dem Schirm nichts mehr ankommt.
+    pub fn alive(&self) -> bool {
+        unsafe { self.comp.CheckDeviceState().map(|b| b.as_bool()).unwrap_or(false) }
     }
 
     pub fn target(&self) -> ID2D1RenderTarget {
@@ -325,6 +398,99 @@ impl Composition {
             ctx.Unmap(&staging, 0);
             Some((w, h, out))
         }
+    }
+}
+
+/// Bildtakt für Animationen.
+///
+/// Vorher trieb ein 8-ms-Timer die Bewegung. Windows-Timer ticken aber in
+/// Wirklichkeit alle 15,6 ms, und der Schirm wechselt alle 16,7 ms (oder
+/// 8,3 bei 120 Hz): zwei Takte, die nichts voneinander wissen. Ergebnis war
+/// ein Schwebungsmuster — mal zwei Schritte in einem Bild, mal keiner. Genau
+/// das sieht man als „nicht flüssig“.
+///
+/// Hier wartet ein Hilfsthread auf den Takt des Fensterverwalters (`DwmFlush`
+/// kehrt zurück, sobald der DWM ein Bild zusammengesetzt hat) und stößt dann
+/// im UI-Thread eine Nachricht an. Ein Schritt je Bild, mit dem echten
+/// Zeitabstand — die Federn in [`crate::anim`] laufen dann so glatt, wie der
+/// Schirm es hergibt. Solange nichts in Bewegung ist, schläft der Thread.
+pub struct FrameClock {
+    active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    wake: windows::Win32::Foundation::HANDLE,
+}
+
+// Das Ereignis-Handle darf über Threads wandern; der Thread hält seine eigene
+// Kopie und benutzt nur PostMessage/SetEvent, beide threadsicher.
+unsafe impl Send for FrameClock {}
+
+impl FrameClock {
+    /// Startet den Taktgeber. `msg` wird an `hwnd` gesendet, sooft ein neues
+    /// Bild fällig ist — aber nie schneller, als der UI-Thread quittiert.
+    pub fn start(hwnd: HWND, msg: u32) -> FrameClock {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
+
+        let active = Arc::new(AtomicBool::new(false));
+        let pending = Arc::new(AtomicBool::new(false));
+        let wake: HANDLE = unsafe { CreateEventW(None, false, false, None) }.unwrap_or_default();
+        let (a, p) = (active.clone(), pending.clone());
+        let hwnd_raw = hwnd.0 as isize;
+        let wake_raw = wake.0 as isize;
+        std::thread::Builder::new()
+            .name("aura-frames".into())
+            .spawn(move || {
+                let hwnd = HWND(hwnd_raw as *mut _);
+                let wake = HANDLE(wake_raw as *mut _);
+                loop {
+                    if !a.load(Ordering::Acquire) {
+                        unsafe {
+                            WaitForSingleObject(wake, INFINITE);
+                        }
+                        continue;
+                    }
+                    // Auf das nächste zusammengesetzte Bild warten. Kehrt der
+                    // Aufruf sofort zurück (kein DWM, Fenster verdeckt, Fehler),
+                    // dann selbst takten — sonst liefe die Schleife heiß.
+                    let t0 = std::time::Instant::now();
+                    let ok = unsafe { windows::Win32::Graphics::Dwm::DwmFlush() }.is_ok();
+                    let spent = t0.elapsed();
+                    if !ok || spent < std::time::Duration::from_millis(1) {
+                        std::thread::sleep(std::time::Duration::from_millis(16).saturating_sub(spent));
+                    }
+                    if a.load(Ordering::Acquire) && !p.swap(true, Ordering::AcqRel) {
+                        unsafe {
+                            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                                Some(hwnd),
+                                msg,
+                                windows::Win32::Foundation::WPARAM(0),
+                                windows::Win32::Foundation::LPARAM(0),
+                            );
+                        }
+                    }
+                }
+            })
+            .ok();
+        FrameClock { active, pending, wake }
+    }
+
+    /// Bewegung an oder aus. Beim Einschalten wird der Thread geweckt.
+    pub fn set_active(&self, on: bool) {
+        use std::sync::atomic::Ordering;
+        let was = self.active.swap(on, Ordering::AcqRel);
+        if on && !was {
+            unsafe {
+                let _ = windows::Win32::System::Threading::SetEvent(self.wake);
+            }
+        }
+    }
+
+    /// Der UI-Thread hat die Nachricht verarbeitet — das nächste Bild darf
+    /// gemeldet werden.
+    pub fn ack(&self) {
+        self.pending.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 

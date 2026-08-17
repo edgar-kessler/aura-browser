@@ -6,196 +6,260 @@
 <link rel="stylesheet" href="/aura.css">
 <script src="/aura.js" defer></script>
 <style>
-.dots{display:flex;gap:8px}
-.dot{width:24px;height:24px;border-radius:var(--r-md);cursor:pointer;border:1px solid rgba(0,0,0,.1);
-  transition:box-shadow .15s var(--ease)}
-.dot.sel{box-shadow:0 0 0 2px rgb(var(--bg)),0 0 0 4px rgb(var(--fg))}
-table.keys{width:100%;border-collapse:collapse;font-size:13px}
-table.keys td{padding:9px 2px;border-bottom:1px solid rgb(var(--line))}
-table.keys tr:last-child td{border-bottom:none}
-table.keys td:last-child{text-align:right;color:rgb(var(--fg-dim))}
-/* Kennzahl-Karte: gleiche Fläche wie alle Karten, die Zahl trägt sie. */
-.shield-hero{display:flex;align-items:center;gap:16px;padding:20px;border-radius:var(--r-lg);margin-bottom:8px;
+/* Zwei Spalten: links die Abschnitte, rechts der Inhalt. Die Leiste bleibt
+   beim Rollen stehen und zeigt, wo man ist — wie in den Einstellungen von
+   Chrome oder im Stripe-Dashboard. Auf schmalen Fenstern rutscht sie als
+   Zeile nach oben. */
+.settings{display:grid;grid-template-columns:188px minmax(0,1fr);gap:0 44px;max-width:1040px;margin:0 auto;padding:0 var(--sp-5)}
+.settings .page{max-width:none;margin:0;padding:var(--sp-7) 0 120px}
+.snav{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding:calc(var(--sp-7) + 6px) 0 var(--sp-6)}
+.snav a{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:var(--r-md);color:rgb(var(--fg-dim));font-size:13px;font-weight:500;text-decoration:none;
+  transition:background .12s var(--ease),color .12s var(--ease)}
+.snav a svg{width:15px;height:15px;flex:none;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;opacity:.85}
+.snav a:hover{background:rgb(var(--muted));color:rgb(var(--fg))}
+.snav a.cur{background:rgb(var(--muted));color:rgb(var(--fg))}
+.snav a:active{background:rgb(var(--g300))}
+.snav .snav-foot{margin-top:var(--sp-5);padding:0 10px;font-size:12px;color:rgb(var(--fg-dim));line-height:1.6}
+@media (max-width:760px){
+  .settings{display:block}
+  .snav{position:static;max-height:none;padding:var(--sp-5) 0 0;display:flex;flex-wrap:wrap;gap:4px}
+  .snav a{padding:6px 10px}
+  .snav .snav-foot{display:none}
+  .settings .page{padding-top:var(--sp-5)}
+}
+
+/* Kopf: Titel und Suche in einer Zeile. */
+.shead{display:flex;align-items:center;gap:var(--sp-4);margin-bottom:var(--sp-2)}
+.shead h1{flex:1}
+.shead .search-field{width:260px;height:36px}
+@media (max-width:760px){.shead{flex-wrap:wrap}.shead .search-field{width:100%}}
+.lead{margin-bottom:var(--sp-5)}
+
+section{scroll-margin-top:var(--sp-5)}
+.nores{display:none;text-align:center;color:rgb(var(--fg-dim));padding:64px 0;font-size:14px}
+body.searching .nores.show{display:block}
+
+/* Zeilen: gleiche Höhe, ruhige Ausrichtung; das Bedienelement rechts. */
+.row .ctl{flex:none;display:flex;align-items:center;gap:10px}
+.dots{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:300px}
+.dot{width:22px;height:22px;border-radius:var(--r-md);cursor:pointer;border:1px solid rgba(0,0,0,.12);position:relative;
+  transition:transform .12s var(--ease),box-shadow .15s var(--ease)}
+.dot:hover{transform:scale(1.08)}
+.dot:active{transform:scale(.94)}
+.dot.sel{box-shadow:0 0 0 2px rgb(var(--card)),0 0 0 4px rgb(var(--fg))}
+.hexwrap input[type=text]{width:104px;font-variant-numeric:tabular-nums}
+
+/* Kennzahl-Karte für den Shield. */
+.shield-hero{display:flex;align-items:center;gap:16px;padding:18px 20px;border-radius:var(--r-lg);margin-bottom:8px;
   background:rgb(var(--card));border:1px solid rgb(var(--line))}
-.shield-hero svg{width:28px;height:28px;flex:none;stroke:rgb(var(--fg-dim));fill:none;stroke-width:1.8}
-.shield-hero .big{font-size:24px;font-weight:600;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+.shield-hero .ico{width:40px;height:40px;border-radius:var(--r-md);display:grid;place-items:center;flex:none;
+  background:rgba(var(--accent),.12);color:rgb(var(--accent))}
+.shield-hero svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.shield-hero .big{font-size:24px;font-weight:600;letter-spacing:-.5px;font-variant-numeric:tabular-nums;line-height:1.15}
 .shield-hero .cap{font-size:13px;color:rgb(var(--fg-dim))}
-.chipline{display:flex;flex-wrap:wrap;gap:6px;padding:4px 0 2px}
+.shield-hero .side{margin-left:auto;text-align:right;font-size:12px;color:rgb(var(--fg-dim));line-height:1.6}
+.shield-hero .side b{display:block;color:rgb(var(--fg));font-weight:500;font-size:13px}
+.chipline{display:flex;flex-wrap:wrap;gap:6px;padding:6px 0 2px}
 .pill button{padding:0;height:auto;border:none;background:none;color:rgb(var(--fg-dim));font-size:14px;line-height:1;cursor:pointer}
 .pill button:hover{color:rgb(var(--fg));background:none}
+
+/* Hinweiszeile unter Umschaltern (Glas). */
+.row .lbl .hint{display:block;margin-top:4px;font-size:12px;line-height:1.5;color:rgb(var(--fg-dim))}
+.row .lbl .hint:empty{display:none}
+.row .lbl .hint.warn{color:rgb(var(--fg))}
+
+/* Tastaturkürzel: dieselben Zeilen wie überall, nur flacher; die Tasten als Kappen. */
+.keys .row{padding:8px 0;font-size:13px}
+.keys .row .lbl{font-size:13px}
+.keys .k{display:flex;align-items:center;justify-content:flex-end;gap:4px;flex-wrap:wrap;color:rgb(var(--fg-dim))}
+.keys .k kbd{height:22px;min-width:22px;padding:0 6px;font-size:11px}
+.keys .k .sep{padding:0 3px;font-size:12px}
+
+/* Sanftes Erscheinen — nur die Karten, nicht die Leiste. */
+section .card,.shield-hero{animation:rise .22s var(--ease) both}
 </style>
 </head>
 <body>
-<div class="page">
-  <h1>Einstellungen</h1>
-  <p class="lead">Aura Browser – nativ für Windows, ohne Electron.</p>
+<div class="settings">
+  <nav class="snav" id="snav" aria-label="Abschnitte">
+    <a href="#s-shield"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.4-3 8.3-7 10-4-1.7-7-5.6-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>Aura Shield</a>
+    <a href="#s-look"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none" opacity=".35"/></svg>Darstellung</a>
+    <a href="#s-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>Suche</a>
+    <a href="#s-tabs"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M8 5v5"/></svg>Start &amp; Tabs</a>
+    <a href="#s-behave"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h6"/></svg>Verhalten</a>
+    <a href="#s-privacy"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Datenschutz</a>
+    <a href="#s-about"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>Über Aura</a>
+    <a href="#s-keys"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8"/></svg>Tastaturkürzel</a>
+    <div class="snav-foot" id="profinfo"></div>
+  </nav>
 
-  <h2>Aura Shield</h2>
-  <div class="shield-hero">
-    <svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.4-3 8.3-7 10-4-1.7-7-5.6-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
-    <div>
-      <div class="big" id="sh_blocked">0</div>
-      <div class="cap">blockierte Anfragen insgesamt</div>
+  <main class="page">
+    <div class="shead">
+      <h1>Einstellungen</h1>
+      <label class="search-field">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input type="search" id="q" placeholder="Einstellungen durchsuchen" autocomplete="off" spellcheck="false">
+      </label>
     </div>
-  </div>
-  <div class="card pad">
-    <div class="row"><div class="lbl"><b>Werbung &amp; Tracker blockieren</b><small>Filtert Anfragen, bevor sie das Gerät verlassen</small></div>
-      <div class="sw" id="shield"></div></div>
-    <div class="row"><div class="lbl"><b>Filterlisten automatisch aktualisieren</b><small>Alle drei Tage im Hintergrund</small></div>
-      <div class="sw" id="shield_update"></div></div>
-    <div class="row"><div class="lbl"><b>Aktive Listen</b><small id="sh_rules">–</small></div>
-      <button id="sh_refresh">Jetzt aktualisieren</button></div>
-    <div class="row" id="sh_lists_row"><div class="lbl"><b>Geladen</b><div class="chipline" id="sh_lists"></div></div></div>
-    <div class="row" id="sh_allow_row" hidden><div class="lbl"><b>Ausnahmen</b><div class="chipline" id="sh_allow"></div></div></div>
-  </div>
+    <p class="lead">Aura Browser – nativ für Windows, ohne Electron.</p>
+    <div class="nores" id="nores">Keine Einstellung passt zu dieser Suche.</div>
 
-  <h2>Darstellung</h2>
-  <div class="card pad">
-    <div class="row"><div class="lbl"><b>Design</b><small>Hell, Dunkel oder dem System folgen</small></div>
-      <select id="theme"><option value="system">System</option><option value="light">Hell</option><option value="dark">Dunkel</option></select></div>
-    <div class="row"><div class="lbl"><b>Akzentfarbe</b><small>Für Markierungen und Highlights</small></div>
-      <div class="dots" id="accents"></div></div>
-    <div class="row"><div class="lbl"><b>Eigene Farbe</b><small>Beliebiger Farbton, wird sofort übernommen</small></div>
-      <div style="display:flex;align-items:center;gap:10px">
-        <input type="color" id="accent_custom" value="#6e5bd0">
-        <input type="text" id="accent_hex" placeholder="#6e5bd0" style="width:110px">
-      </div></div>
-    <div class="row"><div class="lbl"><b>Glaseffekt</b><small id="glasshint">Durchscheinende Oberflächen (wirkt nach Neustart)</small></div>
-      <div class="sw" id="glass"></div></div>
-    <div class="row"><div class="lbl"><b>Glas-Stil</b><small>Acryl ist stärker verwaschen, Mica ruhiger</small></div>
-      <select id="glass_style">
-        <option value="acrylic">Acryl</option>
-        <option value="mica">Mica</option>
-        <option value="tabbed">Mica Alt</option>
-      </select></div>
-    <div class="row"><div class="lbl"><b>Tab-Leiste</b><small>Seitlich wie Arc – oder oben wie Chrome</small></div>
-      <select id="tab_layout">
-        <option value="side">Seitlich</option>
-        <option value="top">Oben</option>
-      </select></div>
-    <div class="row"><div class="lbl"><b>Animationen reduzieren</b><small>Weniger Bewegung, spart Ressourcen</small></div>
-      <div class="sw" id="reduce_motion"></div></div>
-  </div>
+    <section id="s-shield">
+      <h2>Aura Shield</h2>
+      <div class="shield-hero">
+        <div class="ico"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.4-3 8.3-7 10-4-1.7-7-5.6-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg></div>
+        <div>
+          <div class="big" id="sh_blocked">0</div>
+          <div class="cap">blockierte Anfragen insgesamt</div>
+        </div>
+        <div class="side"><b id="sh_rules">–</b>aktive Regeln</div>
+      </div>
+      <div class="card pad">
+        <div class="row"><div class="lbl"><b>Werbung &amp; Tracker blockieren</b><small>Filtert Anfragen, bevor sie das Gerät verlassen</small></div>
+          <div class="ctl"><div class="sw" id="shield"></div></div></div>
+        <div class="row"><div class="lbl"><b>Filterlisten automatisch aktualisieren</b><small>Alle drei Tage im Hintergrund</small></div>
+          <div class="ctl"><div class="sw" id="shield_update"></div></div></div>
+        <div class="row"><div class="lbl"><b>Filterlisten</b><small>Jetzt neu laden, unabhängig vom Turnus</small></div>
+          <div class="ctl"><button id="sh_refresh">Jetzt aktualisieren</button></div></div>
+        <div class="row" id="sh_lists_row"><div class="lbl"><b>Geladen</b><div class="chipline" id="sh_lists"></div></div></div>
+        <div class="row" id="sh_allow_row" hidden><div class="lbl"><b>Ausnahmen</b><small>Seiten, auf denen Shield aus ist</small><div class="chipline" id="sh_allow"></div></div></div>
+      </div>
+    </section>
 
-  <h2>Suche</h2>
-  <div class="card pad">
-    <div class="row"><div class="lbl"><b>Suchmaschine</b><small>Für die Adressleiste</small></div>
-      <select id="search_engine">
-        <option value="google">Google</option><option value="bing">Bing</option>
-        <option value="duckduckgo">DuckDuckGo</option><option value="ecosia">Ecosia</option>
-        <option value="brave">Brave Search</option>
-      </select></div>
-    <div class="row"><div class="lbl"><b>Vorschläge in der Adressleiste</b><small>Lesezeichen, Tabs, Verlauf und Suche beim Tippen</small></div>
-      <div class="sw" id="suggestions"></div></div>
-  </div>
+    <section id="s-look">
+      <h2>Darstellung</h2>
+      <div class="card pad">
+        <div class="row"><div class="lbl"><b>Design</b><small>Hell, Dunkel oder dem System folgen</small></div>
+          <div class="ctl"><select id="theme"><option value="system">System</option><option value="light">Hell</option><option value="dark">Dunkel</option></select></div></div>
+        <div class="row"><div class="lbl"><b>Akzentfarbe</b><small>Für Markierungen und Highlights</small></div>
+          <div class="ctl"><div class="dots" id="accents"></div></div></div>
+        <div class="row"><div class="lbl"><b>Eigene Farbe</b><small>Beliebiger Farbton, wird sofort übernommen</small></div>
+          <div class="ctl hexwrap">
+            <input type="color" id="accent_custom" value="#0072f5">
+            <input type="text" id="accent_hex" placeholder="#0072f5">
+          </div></div>
+        <div class="row"><div class="lbl"><b>Tab-Leiste</b><small>Seitlich wie Arc – oder oben wie Chrome</small></div>
+          <div class="ctl"><select id="tab_layout">
+            <option value="side">Seitlich</option>
+            <option value="top">Oben</option>
+          </select></div></div>
+        <div class="row"><div class="lbl"><b>Glaseffekt</b><small>Durchscheinende Oberfläche über dem Systemhintergrund</small><span class="hint" id="glasshint"></span></div>
+          <div class="ctl"><div class="sw" id="glass"></div></div></div>
+        <div class="row" id="glass_style_row"><div class="lbl"><b>Glas-Stil</b><small>Acryl ist stärker verwaschen, Mica ruhiger</small></div>
+          <div class="ctl"><select id="glass_style">
+            <option value="acrylic">Acryl</option>
+            <option value="mica">Mica</option>
+            <option value="tabbed">Mica Alt</option>
+          </select></div></div>
+        <div class="row"><div class="lbl"><b>Animationen reduzieren</b><small>Weniger Bewegung, spart Ressourcen</small></div>
+          <div class="ctl"><div class="sw" id="reduce_motion"></div></div></div>
+      </div>
+    </section>
 
-  <h2>Start &amp; Tabs</h2>
-  <div class="card pad">
-    <div class="row"><div class="lbl"><b>Startseite</b><small>Ziel von Alt+Pos1</small></div>
-      <input type="text" id="homepage" style="width:260px" placeholder="aura://start"></div>
-    <div class="row"><div class="lbl"><b>Neuer Tab öffnet</b><small>Was beim Drücken von Strg+T erscheint</small></div>
-      <select id="new_tab_page">
-        <option value="start">Aura-Startseite</option>
-        <option value="home">Startseite</option>
-        <option value="blank">Leere Seite</option>
-      </select></div>
-    <div class="row"><div class="lbl"><b>Letzte Sitzung wiederherstellen</b><small>Offene Tabs beim Start erneut öffnen</small></div>
-      <div class="sw" id="restore_session"></div></div>
-    <div class="row"><div class="lbl"><b>Letzten Tab schließen beendet Aura</b><small>Sonst öffnet sich wieder ein neuer Tab</small></div>
-      <div class="sw" id="close_last_tab"></div></div>
-    <div class="row"><div class="lbl"><b>Seitenleiste bei Hover ausklappen</b><small>Zeigt Tab-Titel, ohne zu klicken</small></div>
-      <div class="sw" id="sidebar_hover"></div></div>
-  </div>
+    <section id="s-search">
+      <h2>Suche</h2>
+      <div class="card pad">
+        <div class="row"><div class="lbl"><b>Suchmaschine</b><small>Für die Adressleiste</small></div>
+          <div class="ctl"><select id="search_engine">
+            <option value="google">Google</option><option value="bing">Bing</option>
+            <option value="duckduckgo">DuckDuckGo</option><option value="ecosia">Ecosia</option>
+            <option value="brave">Brave Search</option>
+          </select></div></div>
+        <div class="row"><div class="lbl"><b>Vorschläge in der Adressleiste</b><small>Lesezeichen, Tabs, Verlauf und Suche beim Tippen</small></div>
+          <div class="ctl"><div class="sw" id="suggestions"></div></div></div>
+      </div>
+    </section>
 
-  <h2>Verhalten</h2>
-  <div class="card pad">
-    <div class="row"><div class="lbl"><b>Schlafmodus für Tabs</b><small>Inaktive Tabs ruhen lassen (spart Arbeitsspeicher)</small></div>
-      <div class="sw" id="sleep_tabs"></div></div>
-    <div class="row"><div class="lbl"><b>Ruhen nach</b><small>Wartezeit, bevor ein Hintergrund-Tab schläft</small></div>
-      <select id="sleep_after_min">
-        <option value="5">5 Minuten</option><option value="15">15 Minuten</option>
-        <option value="30">30 Minuten</option><option value="60">1 Stunde</option>
-        <option value="180">3 Stunden</option>
-      </select></div>
-    <div class="row"><div class="lbl"><b>Standardzoom</b><small>Für neu geöffnete Seiten</small></div>
-      <select id="default_zoom">
-        <option value="80">80 %</option><option value="90">90 %</option>
-        <option value="100">100 %</option><option value="110">110 %</option>
-        <option value="125">125 %</option><option value="150">150 %</option>
-      </select></div>
-    <div class="row"><div class="lbl"><b>Pop-ups blockieren</b><small>Unerwünschte Fenster unterdrücken</small></div>
-      <div class="sw" id="block_popups"></div></div>
-    <div class="row"><div class="lbl"><b>Popunder streng blockieren</b>
-      <small>Nur Links dürfen Fenster öffnen. Hilft auf Streaming-Seiten, kann Zahlungs-Popups stören</small></div>
-      <div class="sw" id="popup_strict"></div></div>
-    <div class="row"><div class="lbl"><b>Downloads speichern in</b><small id="dlpath">Downloads\Aura</small></div>
-      <button id="pick_dl">Ordner wählen …</button></div>
-  </div>
+    <section id="s-tabs">
+      <h2>Start &amp; Tabs</h2>
+      <div class="card pad">
+        <div class="row"><div class="lbl"><b>Startseite</b><small>Ziel von Alt+Pos1</small></div>
+          <div class="ctl"><input type="text" id="homepage" style="width:260px" placeholder="aura://start"></div></div>
+        <div class="row"><div class="lbl"><b>Neuer Tab öffnet</b><small>Was beim Drücken von Strg+T erscheint</small></div>
+          <div class="ctl"><select id="new_tab_page">
+            <option value="start">Aura-Startseite</option>
+            <option value="home">Startseite</option>
+            <option value="blank">Leere Seite</option>
+          </select></div></div>
+        <div class="row"><div class="lbl"><b>Letzte Sitzung wiederherstellen</b><small>Offene Tabs beim Start erneut öffnen</small></div>
+          <div class="ctl"><div class="sw" id="restore_session"></div></div></div>
+        <div class="row"><div class="lbl"><b>Letzten Tab schließen beendet Aura</b><small>Sonst öffnet sich wieder ein neuer Tab</small></div>
+          <div class="ctl"><div class="sw" id="close_last_tab"></div></div></div>
+        <div class="row" id="sidebar_hover_row"><div class="lbl"><b>Seitenleiste bei Hover ausklappen</b><small>Zeigt Tab-Titel, ohne zu klicken</small></div>
+          <div class="ctl"><div class="sw" id="sidebar_hover"></div></div></div>
+      </div>
+    </section>
 
-  <h2>Daten &amp; Datenschutz</h2>
-  <div class="card pad">
-    <div class="row"><div class="lbl"><b>Nur HTTPS</b><small>Unverschlüsselte Seiten werden automatisch auf HTTPS gehoben</small></div>
-      <div class="sw" id="https_only"></div></div>
-    <div class="row"><div class="lbl"><b>„Do Not Track“ senden</b><small>Setzt DNT- und Sec-GPC-Header bei jeder Anfrage</small></div>
-      <div class="sw" id="dnt"></div></div>
-    <div class="row" id="strict_row" hidden><div class="lbl"><b>Strenger Modus aktiv für</b>
-      <small>Keine Drittanbieter, keine Downloads, keine Berechtigungen</small>
-      <div class="chipline" id="strict_list"></div></div></div>
-    <div class="row"><div class="lbl"><b>Alle Cookies &amp; Website-Daten löschen</b><small>Betrifft alle Seiten in diesem Profil</small></div>
-      <button class="danger" id="clear_all_data">Alles löschen</button></div>
-    <div class="row"><div class="lbl"><b>Verlauf löschen</b><small>Alle gespeicherten Verlaufseinträge entfernen</small></div>
-      <button id="clear_history">Löschen</button></div>
-    <div class="row"><div class="lbl"><b>Gespeicherte Passwörter</b><small><span id="pwcount">0</span> Passwörter (lokal, DPAPI-verschlüsselt)</small></div>
-      <button id="goto_import">Importieren</button></div>
-    <div class="row"><div class="lbl"><b>Aus Chrome importieren</b><small>Lesezeichen, Verlauf, Passwörter, Autofill</small></div>
-      <button class="primary" id="goto_import2">Import starten</button></div>
-  </div>
+    <section id="s-behave">
+      <h2>Verhalten</h2>
+      <div class="card pad">
+        <div class="row"><div class="lbl"><b>Schlafmodus für Tabs</b><small>Inaktive Tabs ruhen lassen (spart Arbeitsspeicher)</small></div>
+          <div class="ctl"><div class="sw" id="sleep_tabs"></div></div></div>
+        <div class="row"><div class="lbl"><b>Ruhen nach</b><small>Wartezeit, bevor ein Hintergrund-Tab schläft</small></div>
+          <div class="ctl"><select id="sleep_after_min">
+            <option value="5">5 Minuten</option><option value="15">15 Minuten</option>
+            <option value="30">30 Minuten</option><option value="60">1 Stunde</option>
+            <option value="180">3 Stunden</option>
+          </select></div></div>
+        <div class="row"><div class="lbl"><b>Standardzoom</b><small>Für neu geöffnete Seiten</small></div>
+          <div class="ctl"><select id="default_zoom">
+            <option value="80">80 %</option><option value="90">90 %</option>
+            <option value="100">100 %</option><option value="110">110 %</option>
+            <option value="125">125 %</option><option value="150">150 %</option>
+          </select></div></div>
+        <div class="row"><div class="lbl"><b>Pop-ups blockieren</b><small>Unerwünschte Fenster unterdrücken</small></div>
+          <div class="ctl"><div class="sw" id="block_popups"></div></div></div>
+        <div class="row"><div class="lbl"><b>Popunder streng blockieren</b>
+          <small>Nur Links dürfen Fenster öffnen. Hilft auf Streaming-Seiten, kann Zahlungs-Popups stören</small></div>
+          <div class="ctl"><div class="sw" id="popup_strict"></div></div></div>
+        <div class="row"><div class="lbl"><b>Downloads speichern in</b><small id="dlpath">Downloads\Aura</small></div>
+          <div class="ctl"><button id="pick_dl">Ordner wählen …</button></div></div>
+      </div>
+    </section>
 
-  <h2>Über Aura</h2>
-  <div class="card pad">
-    <div class="row"><div class="lbl"><b>Version</b><small id="verline">–</small></div>
-      <button id="upd_check">Nach Updates suchen</button></div>
-    <div class="row"><div class="lbl"><b>Automatisch nach Updates suchen</b><small>Einmal täglich beim Start, im Hintergrund</small></div>
-      <div class="sw" id="auto_update"></div></div>
-    <div class="row" id="upd_row" hidden><div class="lbl"><b id="upd_title">Update verfügbar</b>
-      <small id="upd_notes"></small></div>
-      <button class="primary" id="upd_go">Installieren</button></div>
-    <div class="row"><div class="lbl"><b>Quelltext</b><small id="repoline">–</small></div>
-      <button id="open_repo">Auf GitHub öffnen</button></div>
-  </div>
+    <section id="s-privacy">
+      <h2>Daten &amp; Datenschutz</h2>
+      <div class="card pad">
+        <div class="row"><div class="lbl"><b>Nur HTTPS</b><small>Unverschlüsselte Seiten werden automatisch auf HTTPS gehoben</small></div>
+          <div class="ctl"><div class="sw" id="https_only"></div></div></div>
+        <div class="row"><div class="lbl"><b>„Do Not Track“ senden</b><small>Setzt DNT- und Sec-GPC-Header bei jeder Anfrage</small></div>
+          <div class="ctl"><div class="sw" id="dnt"></div></div></div>
+        <div class="row" id="strict_row" hidden><div class="lbl"><b>Strenger Modus aktiv für</b>
+          <small>Keine Drittanbieter, keine Downloads, keine Berechtigungen</small>
+          <div class="chipline" id="strict_list"></div></div></div>
+        <div class="row"><div class="lbl"><b>Gespeicherte Passwörter</b><small><span id="pwcount">0</span> Passwörter, lokal und DPAPI-verschlüsselt</small></div>
+          <div class="ctl"><button id="goto_passwords">Verwalten</button></div></div>
+        <div class="row"><div class="lbl"><b>Aus Chrome importieren</b><small>Lesezeichen, Verlauf, Passwörter, Autofill</small></div>
+          <div class="ctl"><button id="goto_import">Import starten</button></div></div>
+        <div class="row"><div class="lbl"><b>Verlauf löschen</b><small>Alle gespeicherten Verlaufseinträge entfernen</small></div>
+          <div class="ctl"><button id="clear_history">Löschen</button></div></div>
+        <div class="row"><div class="lbl"><b>Alle Cookies &amp; Website-Daten löschen</b><small>Betrifft alle Seiten in diesem Profil</small></div>
+          <div class="ctl"><button class="danger" id="clear_all_data">Alles löschen</button></div></div>
+      </div>
+    </section>
 
-  <h2>Tastaturkürzel</h2>
-  <div class="card pad">
-    <table class="keys">
-      <tr><td>Neuer Tab</td><td>Strg+T</td></tr>
-      <tr><td>Tab schließen</td><td>Strg+W</td></tr>
-      <tr><td>Adressleiste</td><td>Strg+L</td></tr>
-      <tr><td>Command Palette</td><td>Strg+K</td></tr>
-      <tr><td>Tab wiederherstellen</td><td>Strg+Umschalt+T</td></tr>
-      <tr><td>Verlauf / Downloads</td><td>Strg+H / Strg+J</td></tr>
-      <tr><td>Seite durchsuchen</td><td>Strg+F</td></tr>
-      <tr><td>Lesezeichen setzen</td><td>Strg+D</td></tr>
-      <tr><td>Zoom</td><td>Strg + / − / 0 · Strg+Mausrad</td></tr>
-      <tr><td>Vollbild</td><td>F11</td></tr>
-      <tr><td>DevTools</td><td>F12</td></tr>
-      <tr><td>Tab 1–8 / letzter Tab</td><td>Strg+1…8 / Strg+9</td></tr>
-      <tr><td>Tab wechseln</td><td>Strg+Tab · Strg+Bild↑/↓</td></tr>
-      <tr><td>Neu laden / hart neu laden</td><td>Strg+R / Strg+Umschalt+R</td></tr>
-      <tr><td>Laden stoppen</td><td>Esc</td></tr>
-      <tr><td>Zurück / Vor</td><td>Alt+← / Alt+→ · Maustasten 4/5</td></tr>
-      <tr><td>Startseite</td><td>Alt+Pos1</td></tr>
-      <tr><td>Tab duplizieren</td><td>Strg+Umschalt+D</td></tr>
-      <tr><td>Tab stummschalten</td><td>Strg+Umschalt+M</td></tr>
-      <tr><td>Tab anheften</td><td>Strg+Umschalt+A</td></tr>
-      <tr><td>Geteilte Ansicht</td><td>Strg+Umschalt+S</td></tr>
-      <tr><td>Weitersuchen</td><td>F3 / Strg+G</td></tr>
-      <tr><td>Quelltext anzeigen</td><td>Strg+U</td></tr>
-      <tr><td>Fenster schließen</td><td>Strg+Umschalt+W</td></tr>
-      <tr><td>Link im Hintergrund öffnen</td><td>Strg+Klick / Mittelklick</td></tr>
-      <tr><td>Tab schließen (Mittelklick)</td><td>Mittelklick auf Tab</td></tr>
-    </table>
-  </div>
-  <p class="note" id="profinfo"></p>
+    <section id="s-about">
+      <h2>Über Aura</h2>
+      <div class="card pad">
+        <div class="row"><div class="lbl"><b>Version</b><small id="verline">–</small></div>
+          <div class="ctl"><button id="upd_check">Nach Updates suchen</button></div></div>
+        <div class="row"><div class="lbl"><b>Automatisch nach Updates suchen</b><small>Einmal täglich beim Start, im Hintergrund</small></div>
+          <div class="ctl"><div class="sw" id="auto_update"></div></div></div>
+        <div class="row" id="upd_row" hidden><div class="lbl"><b id="upd_title">Update verfügbar</b>
+          <small id="upd_notes"></small></div>
+          <div class="ctl"><button class="primary" id="upd_go">Installieren</button></div></div>
+        <div class="row"><div class="lbl"><b>Quelltext</b><small id="repoline">–</small></div>
+          <div class="ctl"><button id="open_repo">Auf GitHub öffnen</button></div></div>
+      </div>
+    </section>
+
+    <section id="s-keys">
+      <h2>Tastaturkürzel</h2>
+      <div class="card pad">
+        <div class="keys" id="keys"></div>
+      </div>
+    </section>
+  </main>
 </div>
 <script>
 const $ = s => document.querySelector(s);
@@ -216,17 +280,66 @@ const toRgb = hex => {
   const n = parseInt(m[1], 16);
   return `${n >> 16 & 255},${n >> 8 & 255},${n & 255}`;
 };
+const accentFg = a => {const [r,g,b]=String(a).split(',').map(Number); return (r*.299+g*.587+b*.114) > 150 ? '9,9,11' : '255,255,255';};
+const setAccentVars = rgb => {
+  document.documentElement.style.setProperty('--accent', rgb);
+  document.documentElement.style.setProperty('--accent-fg', accentFg(rgb));
+};
 ACCENTS.forEach(([v, n]) => {
   const d = document.createElement('div');
   d.className = 'dot'; d.title = n; d.style.background = `rgb(${v})`; d.dataset.v = v;
-  d.addEventListener('click', () => post({cmd: 'save_setting', key: 'accent', value: v}));
+  d.addEventListener('click', () => {
+    document.querySelectorAll('.dot').forEach(x => x.classList.toggle('sel', x === d));
+    $('#accent_custom').value = toHex(v);
+    $('#accent_hex').value = toHex(v);
+    setAccentVars(v);
+    post({cmd: 'save_setting', key: 'accent', value: v});
+  });
   $('#accents').appendChild(d);
 });
+
+// --- Tastaturkürzel: Daten statt Markup, Tasten als Kappen ---
+const KEYS = [
+  ['Neuer Tab', 'Strg+T'], ['Tab schließen', 'Strg+W'], ['Adressleiste', 'Strg+L'],
+  ['Command Palette', 'Strg+K'], ['Tab wiederherstellen', 'Strg+Umschalt+T'],
+  ['Verlauf / Downloads', 'Strg+H / Strg+J'], ['Seite durchsuchen', 'Strg+F'],
+  ['Lesezeichen setzen', 'Strg+D'], ['Zoom', 'Strg++ / Strg+− / Strg+0'],
+  ['Vollbild', 'F11'], ['DevTools', 'F12'], ['Tab 1–8 / letzter Tab', 'Strg+1…8 / Strg+9'],
+  ['Tab wechseln', 'Strg+Tab / Strg+Bild↑ / Strg+Bild↓'],
+  ['Neu laden / hart neu laden', 'Strg+R / Strg+Umschalt+R'], ['Laden stoppen', 'Esc'],
+  ['Zurück / Vor', 'Alt+← / Alt+→'], ['Startseite', 'Alt+Pos1'],
+  ['Tab duplizieren', 'Strg+Umschalt+D'], ['Tab stummschalten', 'Strg+Umschalt+M'],
+  ['Tab anheften', 'Strg+Umschalt+A'], ['Geteilte Ansicht', 'Strg+Umschalt+S'],
+  ['Weitersuchen', 'F3 / Strg+G'], ['Quelltext anzeigen', 'Strg+U'],
+  ['Fenster schließen', 'Strg+Umschalt+W'], ['Link im Hintergrund öffnen', 'Strg+Klick / Mittelklick'],
+  ['Tab schließen', 'Mittelklick auf Tab'],
+];
+{
+  const box = $('#keys');
+  KEYS.forEach(([what, keys]) => {
+    const row = document.createElement('div'); row.className = 'row';
+    const a = document.createElement('div'); a.className = 'lbl'; a.textContent = what;
+    const b = document.createElement('div'); b.className = 'ctl k';
+    keys.split(' / ').forEach((combo, i) => {
+      if (i) { const s = document.createElement('span'); s.className = 'sep'; s.textContent = '·'; b.appendChild(s); }
+      // "Strg++" ist Strg und die Taste "+": leere Teile stehen fuer das Plus selbst.
+      const keysOf = combo.endsWith('++') ? [...combo.slice(0, -2).split('+'), '+'] : combo.split('+');
+      keysOf.forEach((k, j) => {
+        if (j) { const s = document.createElement('span'); s.className = 'sep'; s.textContent = '+'; b.appendChild(s); }
+        const kb = document.createElement('kbd'); kb.textContent = k; b.appendChild(kb);
+      });
+    });
+    row.append(a, b);
+    box.appendChild(row);
+  });
+}
+
 function bindToggle(id) {
   $(id).addEventListener('click', () => {
     const on = !$(id).classList.contains('on');
     $(id).classList.toggle('on', on);
     post({cmd: 'save_setting', key: id.slice(1), value: on ? '1' : '0'});
+    if (id === '#glass') updateGlassHint(on);
   });
 }
 ['#reduce_motion', '#restore_session', '#sleep_tabs', '#block_popups', '#shield', '#shield_update',
@@ -239,6 +352,7 @@ let REPO = '';
 const bindSelect = id =>
   $(id).addEventListener('change', e => post({cmd: 'save_setting', key: id.slice(1), value: e.target.value}));
 ['#theme', '#search_engine', '#new_tab_page', '#sleep_after_min', '#default_zoom', '#glass_style', '#tab_layout'].forEach(bindSelect);
+$('#tab_layout').addEventListener('change', e => { $('#sidebar_hover_row').hidden = e.target.value === 'top'; });
 $('#homepage').addEventListener('change', e => {
   const v = e.target.value.trim() || 'aura://start';
   e.target.value = v;
@@ -249,8 +363,8 @@ $('#accent_custom').addEventListener('input', e => {
   const rgb = toRgb(e.target.value);
   if (rgb) {
     $('#accent_hex').value = e.target.value;
-    document.documentElement.style.setProperty('--accent', rgb);
-    document.documentElement.style.setProperty('--accent-fg', (a => {const [r,g,b]=String(a).split(',').map(Number); return (r*.299+g*.587+b*.114) > 150 ? '9,9,11' : '255,255,255';})(rgb));
+    document.querySelectorAll('.dot').forEach(x => x.classList.toggle('sel', x.dataset.v === rgb));
+    setAccentVars(rgb);
     post({cmd: 'save_setting', key: 'accent', value: rgb});
   }
 });
@@ -258,15 +372,97 @@ $('#accent_hex').addEventListener('change', e => {
   const rgb = toRgb(e.target.value);
   if (rgb) {
     $('#accent_custom').value = toHex(rgb);
+    document.querySelectorAll('.dot').forEach(x => x.classList.toggle('sel', x.dataset.v === rgb));
+    setAccentVars(rgb);
     post({cmd: 'save_setting', key: 'accent', value: rgb});
   } else {
     e.target.value = $('#accent_custom').value;
   }
 });
-$('#clear_history').addEventListener('click', () => post({cmd: 'clear_history'}));
+$('#clear_history').addEventListener('click', e => { e.target.textContent = 'Gelöscht'; post({cmd: 'clear_history'}); });
 $('#goto_import').addEventListener('click', () => post({cmd: 'open', url: 'aura://import'}));
-$('#goto_import2').addEventListener('click', () => post({cmd: 'open', url: 'aura://import'}));
+$('#goto_passwords').addEventListener('click', () => post({cmd: 'open', url: 'aura://passwords'}));
 $('#sh_refresh').addEventListener('click', e => { e.target.textContent = 'Wird geladen …'; post({cmd: 'shield_update'}); });
+
+// --- Glas: warum es gerade (nicht) geht ---
+let GLASS = {possible: true, effects: true, active: false};
+function updateGlassHint(wanted) {
+  const h = $('#glasshint');
+  h.className = 'hint';
+  $('#glass_style_row').hidden = !wanted;
+  if (!GLASS.possible) {
+    h.textContent = 'Auf dieser Windows-Version zeichnet der Fensterverwalter keinen Systemhintergrund (ab Windows 11 22H2) – die Oberfläche bleibt deckend.';
+    h.classList.add('warn');
+  } else if (!GLASS.effects) {
+    h.textContent = 'Windows-Transparenzeffekte sind aus (Einstellungen → Personalisierung → Farben) – oder der Energiesparmodus hat sie abgeschaltet. Solange bleibt die Oberfläche deckend.';
+    h.classList.add('warn');
+  } else {
+    h.textContent = '';
+  }
+}
+
+// --- Suche: Zeilen filtern, leere Abschnitte ausblenden ---
+{
+  const q = $('#q');
+  const norm = s => s.toLowerCase().replace(/\s+/g, ' ');
+  const style = document.createElement('style');
+  style.textContent = '.q-hide{display:none!important}';
+  document.head.appendChild(style);
+  const apply = () => {
+    const term = norm(q.value.trim());
+    const rows = [...document.querySelectorAll('.row')];
+    const sections = [...document.querySelectorAll('section')];
+    document.body.classList.toggle('searching', term.length > 0);
+    if (!term) {
+      rows.forEach(r => r.classList.remove('q-hide'));
+      sections.forEach(s => s.hidden = false);
+      $('#nores').classList.remove('show');
+      return;
+    }
+    let any = false;
+    sections.forEach(sec => {
+      const hit = norm(sec.querySelector('h2')?.textContent || '').includes(term);
+      let shown = 0;
+      rows.filter(r => sec.contains(r)).forEach(r => {
+        const ok = !r.hasAttribute('hidden') && (hit || norm(r.textContent).includes(term));
+        r.classList.toggle('q-hide', !ok);
+        if (ok) shown++;
+      });
+      sec.hidden = shown === 0;
+      any ||= shown > 0;
+    });
+    $('#nores').classList.toggle('show', !any);
+  };
+  q.addEventListener('input', apply);
+  q.addEventListener('keydown', e => { if (e.key === 'Escape') { q.value = ''; apply(); q.blur(); } });
+  // Strg+F sucht hier in den Einstellungen.
+  addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); q.focus(); q.select(); } });
+}
+
+// --- Abschnittsleiste: rollt hin und markiert, wo man ist ---
+{
+  const links = [...document.querySelectorAll('.snav a')];
+  const secs = links.map(a => document.querySelector(a.getAttribute('href')));
+  const mark = id => links.forEach(a => a.classList.toggle('cur', a.getAttribute('href') === '#' + id));
+  links.forEach((a, i) => a.addEventListener('click', e => {
+    e.preventDefault();
+    secs[i].scrollIntoView({behavior: document.body.classList.contains('reduce') ? 'auto' : 'smooth', block: 'start'});
+    mark(secs[i].id);
+    history.replaceState(null, '', '#' + secs[i].id);
+  }));
+  const spy = () => {
+    // Der Abschnitt, dessen Oberkante zuletzt über der Lesehöhe liegt.
+    const y = scrollY + innerHeight * 0.28;
+    let cur = secs[0];
+    for (const s of secs) if (!s.hidden && s.offsetTop <= y) cur = s;
+    if (scrollY + innerHeight >= document.documentElement.scrollHeight - 2) cur = [...secs].reverse().find(s => !s.hidden) || cur;
+    mark(cur.id);
+  };
+  addEventListener('scroll', spy, {passive: true});
+  addEventListener('resize', spy);
+  spy();
+  if (location.hash) document.querySelector(location.hash)?.scrollIntoView();
+}
 
 window.chrome?.webview?.addEventListener('message', ev => {
   const m = ev.data;
@@ -274,10 +470,10 @@ window.chrome?.webview?.addEventListener('message', ev => {
   const t = m.theme, d = m.data;
   document.body.classList.toggle('dark', !!t.dark);
   document.body.classList.toggle('reduce', !!t.reduce);
-  document.documentElement.style.setProperty('--accent', t.accent);
-  document.documentElement.style.setProperty('--accent-fg', (a => {const [r,g,b]=String(a).split(',').map(Number); return (r*.299+g*.587+b*.114) > 150 ? '9,9,11' : '255,255,255';})(t.accent));
+  setAccentVars(t.accent);
   $('#theme').value = d.theme;
   $('#tab_layout').value = d.tab_layout || 'side';
+  $('#sidebar_hover_row').hidden = (d.tab_layout || 'side') === 'top';
   $('#search_engine').value = d.search_engine;
   $('#new_tab_page').value = d.new_tab_page || 'start';
   $('#sleep_after_min').value = d.sleep_after_min || '15';
@@ -291,11 +487,8 @@ window.chrome?.webview?.addEventListener('message', ev => {
    ['#popup_strict', d.popup_strict], ['#glass', d.glass]]
     .forEach(([id, v]) => $(id).classList.toggle('on', v === '1'));
   $('#glass_style').value = d.glass_style || 'acrylic';
-  if (d.transparency !== '1') {
-    $('#glasshint').textContent =
-      'Windows-Transparenzeffekte sind aus — ohne sie zeichnet Windows kein Glas. '
-      + 'Einstellungen → Personalisierung → Farben → Transparenzeffekte';
-  }
+  GLASS = {possible: d.glass_possible !== false, effects: d.effects !== false, active: !!d.glass_active};
+  updateGlassHint(d.glass === '1');
   const strict = d.shield_strict || [];
   $('#strict_row').hidden = strict.length === 0;
   $('#strict_list').innerHTML = '';
@@ -306,14 +499,15 @@ window.chrome?.webview?.addEventListener('message', ev => {
     $('#strict_list').appendChild(p);
   });
   document.querySelectorAll('.dot').forEach(x => x.classList.toggle('sel', x.dataset.v === d.accent));
-  $('#accent_custom').value = toHex(d.accent || '110,91,208');
+  $('#accent_custom').value = toHex(d.accent || '0,114,245');
   $('#accent_hex').value = $('#accent_custom').value;
   $('#pwcount').textContent = d.passwords ?? 0;
 
   $('#sh_blocked').textContent = num(d.shield_blocked);
-  $('#sh_rules').textContent = `${num(d.shield_rules)} Netzwerkregeln · ${num(d.shield_cosmetic)} Kosmetikregeln`;
+  $('#sh_rules').textContent = `${num(d.shield_rules)} Netzwerk · ${num(d.shield_cosmetic)} Kosmetik`;
   $('#sh_refresh').textContent = 'Jetzt aktualisieren';
   const lists = d.shield_lists || [];
+  $('#sh_lists_row').hidden = lists.length === 0;
   $('#sh_lists').innerHTML = '';
   lists.forEach(l => {
     const p = document.createElement('span');
@@ -358,7 +552,7 @@ window.chrome?.webview?.addEventListener('message', ev => {
     $('#verline').textContent = `Aura Browser ${d.version} · suche nach Updates …`;
   }
 
-  $('#profinfo').textContent = `Profil: ${t.profile}${t.private ? ' (privat)' : ''} · Aura ${d.version} · WebView2`;
+  $('#profinfo').textContent = `Profil ${t.profile}${t.private ? ' (privat)' : ''} · Aura ${d.version}`;
 });
 </script>
 </body>
