@@ -136,16 +136,19 @@ impl Storage {
     }
 
     // ---------- settings ----------
+    /// Einstellungen werden von vielen Stellen bei jedem Bild oder jeder
+    /// Mausbewegung gelesen — die vorbereitete Anweisung bleibt deshalb im
+    /// Statement-Cache, statt jedes Mal neu geparst zu werden.
     pub fn get_setting(&self, key: &str, default: &str) -> String {
         self.conn
-            .query_row(
-                "SELECT value FROM settings WHERE key=?1",
-                params![key],
-                |r| r.get(0),
-            )
-            .optional()
+            .prepare_cached("SELECT value FROM settings WHERE key=?1")
             .ok()
-            .flatten()
+            .and_then(|mut st| {
+                st.query_row(params![key], |r| r.get::<_, String>(0))
+                    .optional()
+                    .ok()
+                    .flatten()
+            })
             .unwrap_or_else(|| default.to_string())
     }
 
@@ -391,16 +394,17 @@ impl Storage {
             })
     }
 
+    /// Wird bei jedem Bild für den Stern in der Adressleiste gefragt.
     pub fn is_bookmarked(&self, url: &str) -> Option<i64> {
         self.conn
-            .query_row(
-                "SELECT id FROM bookmarks WHERE url=?1 AND is_folder=0",
-                params![url],
-                |r| r.get(0),
-            )
-            .optional()
+            .prepare_cached("SELECT id FROM bookmarks WHERE url=?1 AND is_folder=0")
             .ok()
-            .flatten()
+            .and_then(|mut st| {
+                st.query_row(params![url], |r| r.get::<_, i64>(0))
+                    .optional()
+                    .ok()
+                    .flatten()
+            })
     }
 
     pub fn all_bookmarks(&self) -> Vec<Bookmark> {
@@ -520,10 +524,11 @@ impl Storage {
     }
 
     // ---------- tab groups ----------
+    /// Wird bei jedem Bild der Seitenleiste gefragt (Gruppenpunkte).
     pub fn list_groups(&self) -> Vec<TabGroup> {
         let mut st = match self
             .conn
-            .prepare("SELECT id,name,color FROM tab_groups ORDER BY id")
+            .prepare_cached("SELECT id,name,color FROM tab_groups ORDER BY id")
         {
             Ok(s) => s,
             Err(_) => return vec![],

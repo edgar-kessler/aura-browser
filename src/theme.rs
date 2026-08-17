@@ -181,6 +181,15 @@ impl Theme {
         c
     }
 
+    /// Der Druck auf ein Bedienelement: die Stufe „gewählt“, über die
+    /// Berührung gelegt. Deutlich sichtbar, aber dieselbe Familie — kein
+    /// Farbwechsel, nur eine Stufe tiefer.
+    pub fn press_at(&self, t: f32) -> D2D1_COLOR_F {
+        let mut c = self.active;
+        c.a *= t.clamp(0.0, 1.0);
+        c
+    }
+
     /// Der Fokusring: der Akzent, deutlich sichtbar aber nicht grell.
     pub fn ring(&self) -> D2D1_COLOR_F {
         let (r, g, b) = self.accent;

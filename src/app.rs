@@ -33,10 +33,26 @@ pub const WM_UPDATE_FOUND: u32 = WM_APP + 3;
 pub const WM_UPDATE_READY: u32 = WM_APP + 4;
 /// Ein Befehl der Fernsteuerung wartet auf Ausführung im UI-Thread.
 pub const WM_DEBUG: u32 = WM_APP + 5;
-const TIMER_ANIM: usize = 1;
+/// Der Bildtakt (siehe [`crate::gfx::FrameClock`]): ein neues Bild ist fällig.
+pub const WM_FRAME: u32 = WM_APP + 6;
+/// Windows hat die Transparenzeffekte an- oder abgeschaltet (Energiesparen,
+/// Einstellung) — kommt aus dem WinRT-Ereignis, im UI-Thread auszuwerten.
+pub const WM_EFFECTS: u32 = WM_APP + 7;
 const TIMER_TOOLTIP: usize = 2;
 const TIMER_SLEEP: usize = 3;
 const TIMER_SESSION: usize = 4;
+/// Neuer Versuch, ein verlorenes Grafikgerät anzulegen.
+const TIMER_DEVICE: usize = 5;
+/// Nach einem Verlust des Grafikgeräts: so lange warten, bevor der nächste
+/// Versuch, es neu anzulegen (Millisekunden).
+const DEVICE_RETRY_MS: u64 = 400;
+/// Nachrichten des Fensterverwalters, die im windows-Crate keinen Namen tragen.
+const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
+const WM_DWMCOLORIZATIONCOLORCHANGED: u32 = 0x0320;
+const WM_THEMECHANGED: u32 = 0x031A;
+/// DwmSetWindowAttribute: Art des Systemhintergrunds (Windows 11 22H2+).
+const DWMWA_SYSTEMBACKDROP_TYPE: DWMWINDOWATTRIBUTE = DWMWINDOWATTRIBUTE(38);
+const DWMSBT_NONE: i32 = 1;
 
 const TOPBAR_H: f32 = 56.0;
 /// Tab-Leiste oben (wie Chrome): Höhe der Tabzeile und der Werkzeugzeile
@@ -63,8 +79,14 @@ const SPRING_SIDEBAR: (f32, f32) = (0.42, 1.0);
 /// Bewegung, die man wirklich sieht.
 const SPRING_INDICATOR: (f32, f32) = (0.34, 0.78);
 const SPRING_SCROLL: (f32, f32) = (0.36, 1.0);
-/// Zeitkonstanten fürs Auf- und Abblenden (Sekunden).
-const TAU_HOVER: f32 = 0.055;
+/// Zeitkonstanten fürs Auf- und Abblenden (Sekunden). Berührung kommt
+/// schnell und geht etwas langsamer — so folgt die Fläche dem Zeiger, ohne
+/// beim Verlassen abrupt abzureißen.
+const TAU_HOVER: f32 = 0.045;
+const TAU_HOVER_OUT: f32 = 0.09;
+/// Das Nachleuchten eines Drucks nach dem Loslassen. Der Druck selbst
+/// erscheint ohne Verzögerung — ein Klick muss sich wie ein Klick anfühlen.
+const TAU_PRESS_OUT: f32 = 0.11;
 const TAU_TAB: f32 = 0.075;
 
 /// Akzentfarbe und Dunkel-Flag der laufenden App — für Skripte, die in Seiten
@@ -140,6 +162,9 @@ pub enum AppMsg {
     OmniCancel { edit: HWND },
     OmniNav { edit: HWND, delta: i32 },
     UpgradeToHttps { tab: u32, url: String },
+    /// Ein Prozess der Ansicht ist weg (COREWEBVIEW2_PROCESS_FAILED_KIND).
+    /// Ohne Reaktion bliebe im Inhaltsbereich ein leeres Loch stehen.
+    ProcessFailed { tab: u32, kind: i32 },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -207,7 +232,27 @@ pub struct App {
     /// Composition surface (glass). None = classic opaque HWND target.
     comp: Option<crate::gfx::Composition>,
     comp_dev: Option<crate::gfx::CompDevice>,
+    /// Das Fenster wurde ohne Umleitungsfläche angelegt (WS_EX_NOREDIRECTIONBITMAP).
+    /// Dann gibt es *nur* die Kompositionsfläche — geht sie verloren, muss sie
+    /// neu entstehen; ein HWND-Ziel zeigt auf so einem Fenster nichts.
+    comp_capable: bool,
+    /// Frühestens dann das verlorene Gerät neu anlegen.
+    comp_retry_at: u64,
     pub glass: bool,
+    /// Der Nutzer will Glas (Einstellung); ob es gerade geht, steht in `glass`.
+    glass_wanted: bool,
+    /// Windows kennt DWMWA_SYSTEMBACKDROP_TYPE (Windows 11 22H2+). Ohne das
+    /// zeichnet der DWM keinen Hintergrund unter durchscheinende Flächen.
+    backdrop_ok: bool,
+    /// Der aktuelle Systemhintergrund (DWMSBT_*).
+    backdrop_kind: i32,
+    /// Ein Bild ist angefordert und WM_PAINT unterwegs.
+    paint_pending: bool,
+    /// Bildtakt für Animationen.
+    frame: crate::gfx::FrameClock,
+    /// Wenn WinRT das liefert: Beobachter für „Transparenzeffekte“.
+    #[allow(dead_code)]
+    effects_watch: Option<windows::UI::ViewManagement::UISettings>,
     pub scale: f32,
     pub theme: Theme,
     pub theme_mode: ThemeMode,
@@ -257,7 +302,17 @@ pub struct App {
     pub content_left: f32,
     pub expanded: bool,
     pub hot: Hot,
+    /// Element unter der gedrückten Maustaste (`Hot::None`, wenn keine).
     pub pressed: Hot,
+    /// Das zuletzt gedrückte Element und wie stark der Druck noch sichtbar
+    /// ist: 1 solange gehalten und berührt, danach klingt er ab.
+    press_hot: Hot,
+    press_t: f32,
+    /// Die Maus wurde für einen Druck auf die Oberfläche eingefangen.
+    mouse_captured: bool,
+    /// Einstellung „Seitenleiste bei Hover ausklappen“, zwischengespeichert —
+    /// bei jeder Mausbewegung nachschlagen wäre eine Datenbankabfrage.
+    sidebar_hover: bool,
     pub layout: Layout,
 
     // animation state
@@ -267,7 +322,7 @@ pub struct App {
     ind_y: f32,
     ind_h: f32,
     pub ind_ready: bool,
-    anim_last: u64,
+    anim_last: std::time::Instant,
     anim_on: bool,
 
     pub edit: HWND,
@@ -414,11 +469,11 @@ impl App {
         // through to the desktop.
         let want_glass = storage.get_setting("glass", "1") == "1";
         let comp_dev = gfx.create_comp_device();
-        let glass = comp_dev.is_some() && want_glass && crate::theme::system_transparency();
+        let comp_capable = comp_dev.is_some();
 
         let title = wide("Aura Browser");
         let class = wide("AuraMainWindow");
-        let ex_style = if comp_dev.is_some() {
+        let ex_style = if comp_capable {
             WS_EX_NOREDIRECTIONBITMAP
         } else {
             WINDOW_EX_STYLE(0)
@@ -434,7 +489,7 @@ impl App {
             )?
         };
 
-        // Rounded corners + dark frame + shadow line.
+        // Rounded corners + dark frame.
         unsafe {
             let corner = DWMWCP_ROUND;
             let _ = DwmSetWindowAttribute(
@@ -450,29 +505,17 @@ impl App {
                 &dark as *const _ as *const _,
                 4,
             );
-            let margins = if glass {
-                // Sheet of glass: the backdrop covers the whole client area.
-                MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 }
-            } else {
-                MARGINS { cxLeftWidth: 0, cxRightWidth: 0, cyTopHeight: 1, cyBottomHeight: 0 }
-            };
-            let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
-            if glass {
-                // Windows 11 acrylic behind the chrome (falls back silently on 10).
-                const DWMWA_SYSTEMBACKDROP_TYPE: DWMWINDOWATTRIBUTE = DWMWINDOWATTRIBUTE(38);
-                let backdrop: i32 = match storage.get_setting("glass_style", "acrylic").as_str() {
-                    "mica" => 2,   // DWMSBT_MAINWINDOW
-                    "tabbed" => 4, // DWMSBT_TABBEDWINDOW
-                    _ => 3,        // DWMSBT_TRANSIENTWINDOW (acrylic)
-                };
-                let _ = DwmSetWindowAttribute(
-                    hwnd,
-                    DWMWA_SYSTEMBACKDROP_TYPE,
-                    &backdrop as *const _ as *const _,
-                    4,
-                );
-            }
         }
+        // Kennt dieses Windows den Systemhintergrund überhaupt? Auf Windows 10
+        // und 11 21H2 lehnt DwmSetWindowAttribute(38) ab — dort darf die Fläche
+        // nicht durchscheinen, sonst sieht man den Schreibtisch statt Glas.
+        let backdrop_kind = backdrop_kind_of(&storage.get_setting("glass_style", "acrylic"));
+        let backdrop_ok = unsafe {
+            let probe = DWMSBT_NONE;
+            DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &probe as *const _ as *const _, 4).is_ok()
+        };
+        let glass = comp_capable && want_glass && backdrop_ok && effects_enabled();
+        apply_backdrop(hwnd, glass, backdrop_kind);
 
         let scale = dpi_scale(hwnd);
 
@@ -480,6 +523,8 @@ impl App {
         let edit = create_edit(hwnd, scale, hfont, 100)?;
         let find_edit = create_edit(hwnd, scale, hfont, 101)?;
 
+        let frame = crate::gfx::FrameClock::start(hwnd, WM_FRAME);
+        let sidebar_hover = storage.get_setting("sidebar_hover", "0") == "1";
         let mut app = Box::new(App {
             hwnd,
             hinst,
@@ -487,7 +532,15 @@ impl App {
             rt: None,
             comp: None,
             comp_dev,
+            comp_capable,
+            comp_retry_at: 0,
             glass,
+            glass_wanted: want_glass,
+            backdrop_ok,
+            backdrop_kind,
+            paint_pending: false,
+            frame,
+            effects_watch: None,
             scale,
             theme,
             theme_mode,
@@ -521,6 +574,10 @@ impl App {
             expanded: false,
             hot: Hot::None,
             pressed: Hot::None,
+            press_hot: Hot::None,
+            press_t: 0.0,
+            mouse_captured: false,
+            sidebar_hover,
             layout: Layout::default(),
             hot_prev: Hot::None,
             hot_t: 0.0,
@@ -528,7 +585,7 @@ impl App {
             ind_y: 0.0,
             ind_h: 0.0,
             ind_ready: false,
-            anim_last: 0,
+            anim_last: std::time::Instant::now(),
             anim_on: false,
             edit,
             editing: false,
@@ -581,22 +638,15 @@ impl App {
 
         // Hang the composition swap chain off the window now that it exists.
         // The surface is used even without glass — it just paints opaque then.
-        if let Some(dev) = &app.comp_dev {
-            let rc = client_rect(hwnd);
-            app.comp = app.gfx.create_composition(
-                dev,
-                hwnd,
-                rc.right as u32,
-                rc.bottom as u32,
-                app.scale,
-            );
-            if app.comp.is_none() {
-                app.glass = false;
-            }
+        app.ensure_composition();
+        if app.comp.is_none() {
+            app.glass = false;
+            apply_backdrop(hwnd, false, app.backdrop_kind);
         }
         if app.glass {
             app.theme.glassify();
         }
+        app.effects_watch = watch_effects(hwnd);
 
         // Breite und Zustand der Seitenleiste, wie der Nutzer sie verlassen hat.
         app.sb_wide = app
@@ -619,7 +669,7 @@ impl App {
         unsafe {
             let _ = ShowWindow(hwnd, SW_SHOW);
         }
-        app.paint();
+        app.paint_now(false);
 
         // Filter lists load in the background from here on.
         crate::adblock::load_cached_async(fdir.clone(), shield_on, hwnd.0 as isize, WM_FILTERS);
@@ -762,8 +812,18 @@ impl App {
                 WM_NCHITTEST => return self.hit_test_nchittest(hwnd, l),
                 WM_ERASEBKGND => return LRESULT(1),
                 WM_PAINT => {
-                    self.paint();
+                    // Hier landen alle gesammelten Bitten um ein Bild (`paint`).
                     let _ = ValidateRect(Some(hwnd), None);
+                    self.paint_now(false);
+                    return LRESULT(0);
+                }
+                WM_FRAME => {
+                    // Der Bildtakt: ein Animationsschritt, dann sofort das Bild —
+                    // so kommt es beim nächsten Zusammensetzen auf den Schirm.
+                    self.frame.ack();
+                    if self.anim_on {
+                        self.anim_tick();
+                    }
                     return LRESULT(0);
                 }
                 WM_ENTERSIZEMOVE => {
@@ -779,6 +839,9 @@ impl App {
                     return LRESULT(0);
                 }
                 WM_SIZE => {
+                    if w.0 == SIZE_MINIMIZED as usize {
+                        return LRESULT(0);
+                    }
                     let rc = client_rect(hwnd);
                     if let Some(rt) = &self.rt {
                         let _ = rt.Resize(&D2D_SIZE_U {
@@ -799,7 +862,11 @@ impl App {
                     } else {
                         self.relayout();
                     }
-                    self.paint();
+                    // Das Bild sofort und im Gleichschritt mit dem Rahmen: erst
+                    // wenn der DWM es übernommen hat, geht es zurück in die
+                    // Größenschleife. Sonst hinkt die Fläche dem Rahmen nach.
+                    self.paint_now(true);
+                    let _ = ValidateRect(Some(hwnd), None);
                     return LRESULT(0);
                 }
                 WM_DPICHANGED => {
@@ -842,38 +909,23 @@ impl App {
                     return LRESULT(0);
                 }
                 WM_LBUTTONDOWN => {
-                    let hot = self.hot;
-                    self.pressed = hot;
-                    if hot == Hot::SbEdge {
-                        self.begin_sidebar_drag(x_lparam(l) as f32 / self.scale);
-                        return LRESULT(0);
-                    }
-                    // Klick in die schon offene Adressleiste setzt die Marke,
-                    // statt den Text erneut ganz auszuwählen.
-                    if self.editing && hot == Hot::Omnibox {
-                        let xd = x_lparam(l) as f32 / self.scale;
-                        let i = self.omnibox_index_at(xd);
-                        self.omni.caret = i;
-                        self.omni.anchor = i;
-                        self.omni.blink_from = now_ms();
-                        self.omni_drag = true;
-                        SetCapture(self.hwnd);
-                        self.paint();
-                        return LRESULT(0);
-                    }
-                    self.on_click(hot);
+                    self.mouse_down(x_lparam(l) as f32 / self.scale, y_lparam(l) as f32 / self.scale);
                     return LRESULT(0);
                 }
                 WM_LBUTTONUP => {
-                    if self.omni_drag {
-                        self.omni_drag = false;
-                        let _ = ReleaseCapture();
-                    }
-                    self.end_sidebar_drag();
+                    self.mouse_up(x_lparam(l) as f32 / self.scale, y_lparam(l) as f32 / self.scale);
                     return LRESULT(0);
                 }
                 WM_CAPTURECHANGED => {
+                    // Jemand anders hat die Maus — ein Druck kann nicht mehr
+                    // enden, also ist er vorbei.
                     self.sb_drag = None;
+                    self.mouse_captured = false;
+                    if self.pressed != Hot::None {
+                        self.pressed = Hot::None;
+                        self.start_anim();
+                        self.paint();
+                    }
                     return LRESULT(0);
                 }
                 WM_SETCURSOR => {
@@ -898,17 +950,25 @@ impl App {
                     return LRESULT(0);
                 }
                 WM_LBUTTONDBLCLK => {
-                    if self.hot == Hot::SbEdge {
+                    let (xd, yd) = (x_lparam(l) as f32 / self.scale, y_lparam(l) as f32 / self.scale);
+                    let hot = self.hit(xd, yd);
+                    if hot == Hot::SbEdge {
                         // Doppelklick auf die Kante klappt um, wie in Editoren.
                         self.sb_drag = None;
+                        self.pressed = Hot::None;
                         let _ = ReleaseCapture();
                         self.toggle_sidebar();
-                    } else if self.hot == Hot::Omnibox {
-                        self.begin_edit();
-                    } else if self.hot == Hot::None && y_lparam(l) as f32 / self.scale < self.top_h() {
+                    } else if hot == Hot::Omnibox {
+                        // Der erste Klick hat das Feld schon geöffnet und alles
+                        // markiert — dabei bleibt es.
+                    } else if hot == Hot::None && yd < self.top_h() && (self.top_tabs || xd >= self.sidebar_w) {
                         // Double-click on empty chrome toggles maximize, like a titlebar.
                         let cmd = if IsZoomed(hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE };
                         let _ = ShowWindow(hwnd, cmd);
+                    } else if hot != Hot::None {
+                        // Der zweite Klick eines Doppelklicks ist ein Klick:
+                        // zweimal „Zurück“ geht zwei Seiten zurück.
+                        self.mouse_down(xd, yd);
                     }
                     return LRESULT(0);
                 }
@@ -997,10 +1057,13 @@ impl App {
                 }
                 WM_TIMER => {
                     match w.0 {
-                        TIMER_ANIM => self.anim_tick(),
                         TIMER_TOOLTIP => self.tooltip_tick(),
                         TIMER_SLEEP => self.sleep_tick(),
                         TIMER_SESSION => self.save_session(),
+                        TIMER_DEVICE => {
+                            let _ = KillTimer(Some(hwnd), TIMER_DEVICE);
+                            self.paint();
+                        }
                         _ => {}
                     }
                     return LRESULT(0);
@@ -1031,10 +1094,26 @@ impl App {
                     self.on_sync();
                     return LRESULT(0);
                 }
-                WM_SETTINGCHANGE => {
+                WM_SETTINGCHANGE | WM_THEMECHANGED | WM_DWMCOLORIZATIONCOLORCHANGED => {
                     if self.theme_mode == ThemeMode::System {
                         self.apply_theme(ThemeMode::System);
                     }
+                    // „Transparenzeffekte“ könnten gerade umgeschaltet worden
+                    // sein — dann muss die Fläche deckend werden (oder darf
+                    // wieder durchscheinen).
+                    self.refresh_glass();
+                    return DefWindowProcW(hwnd, msg, w, l);
+                }
+                WM_EFFECTS => {
+                    self.refresh_glass();
+                    return LRESULT(0);
+                }
+                WM_DWMCOMPOSITIONCHANGED => {
+                    // Der Fensterverwalter hat neu angesetzt: Hintergrund und
+                    // Fläche neu anmelden, ein frisches Bild.
+                    apply_backdrop(hwnd, self.glass, self.backdrop_kind);
+                    self.refresh_glass();
+                    self.paint();
                     return DefWindowProcW(hwnd, msg, w, l);
                 }
                 WM_CLOSE => {
@@ -1363,6 +1442,10 @@ impl App {
         let active_id = self.tabs.get(self.active).map(|t| t.id).unwrap_or(0);
         let split = self.split;
         let mut reclip = false;
+        // Zwei Durchgänge: erst zeigen, dann verstecken. Andersherum stünde
+        // zwischen dem Ausblenden der alten und dem Einblenden der neuen
+        // Ansicht für einen Moment gar keine Seite im Fenster — man sähe die
+        // Grundierung aufblitzen.
         for tab in &mut self.tabs {
             let Some(ctl) = tab.controller.clone() else { continue };
             let is_active = tab.id == active_id;
@@ -1378,27 +1461,30 @@ impl App {
             } else {
                 None
             };
+            let Some(rect) = target else { continue };
             unsafe {
-                match target {
-                    // Skip redundant SetBounds: every call reflows the page.
-                    Some(rect) => {
-                        if tab.last_bounds != Some(rect) {
-                            let _ = ctl.SetBounds(rect);
-                            tab.last_bounds = Some(rect);
-                            reclip = true;
-                        }
-                        if tab.last_visible != Some(true) {
-                            let _ = ctl.SetIsVisible(true);
-                            tab.last_visible = Some(true);
-                        }
-                    }
-                    None => {
-                        if tab.last_visible != Some(false) {
-                            let _ = ctl.SetIsVisible(false);
-                            tab.last_visible = Some(false);
-                        }
-                    }
+                // Skip redundant SetBounds: every call reflows the page.
+                if tab.last_bounds != Some(rect) {
+                    let _ = ctl.SetBounds(rect);
+                    tab.last_bounds = Some(rect);
+                    reclip = true;
                 }
+                if tab.last_visible != Some(true) {
+                    let _ = ctl.SetIsVisible(true);
+                    tab.last_visible = Some(true);
+                }
+            }
+        }
+        for tab in &mut self.tabs {
+            let Some(ctl) = tab.controller.clone() else { continue };
+            if tab.id == active_id || split == Some(tab.id) {
+                continue;
+            }
+            if tab.last_visible != Some(false) {
+                unsafe {
+                    let _ = ctl.SetIsVisible(false);
+                }
+                tab.last_visible = Some(false);
             }
         }
         if reclip {
@@ -1425,29 +1511,60 @@ impl App {
     }
 
     // ---------------- painting ----------------
+    /// Bittet um ein neues Bild.
+    ///
+    /// Gemalt wird nicht hier, sondern gesammelt in WM_PAINT — das kommt,
+    /// sobald die Warteschlange leer ist. Zehn Bitten in einer Runde (Maus
+    /// bewegt, Titel geändert, Symbol geladen) ergeben so ein einziges Bild,
+    /// und keine Eingabe wartet hinter einem Zeichenvorgang.
     pub fn paint(&mut self) {
-        // Glass path: a DirectComposition swap chain with per-pixel alpha, so the
-        // Mica/Acrylic backdrop shows through the chrome.
-        if self.comp.is_some() {
+        if self.paint_pending {
+            return;
+        }
+        self.paint_pending = true;
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
+    }
+
+    /// Malt jetzt. `sync`: nach dem Abschicken warten, bis der DWM das Bild
+    /// hat — für WM_SIZE, damit Rahmen und Fläche zusammen springen.
+    pub fn paint_now(&mut self, sync: bool) {
+        self.paint_pending = false;
+        if unsafe { IsIconic(self.hwnd) }.as_bool() {
+            return;
+        }
+
+        // Kompositionspfad: eine Kette mit Alphakanal auf einer
+        // DirectComposition-Fläche; durch sie scheint Mica/Acryl.
+        if self.comp_capable {
+            if !self.ensure_composition() {
+                return;
+            }
             let Some(c) = self.comp.as_ref() else { return };
-            if c.begin().is_err() {
+            if !c.alive() {
+                self.on_device_lost();
+                return;
+            }
+            if let Err(e) = c.begin() {
+                // GetBuffer scheitert nur, wenn das Gerät weg ist.
+                let _ = e;
+                self.on_device_lost();
                 return;
             }
             let rt = c.target();
             self.paint_chrome(&rt);
-            let ok = match self.comp.as_ref() {
-                Some(c) => c.end(),
-                None => true,
+            let result = match self.comp.as_mut() {
+                Some(c) => c.end(sync),
+                None => crate::gfx::Frame::Ok,
             };
-            if !ok {
-                self.comp = None; // device lost: fall back next frame
-                for t in &mut self.tabs {
-                    t.favicon = None;
-                }
+            if result == crate::gfx::Frame::DeviceLost {
+                self.on_device_lost();
             }
             return;
         }
 
+        // Klassischer Pfad ohne Komposition (keine D3D11-Hardware).
         if self.rt.is_none() {
             match self.gfx.create_hwnd_rt(self.hwnd, self.scale) {
                 Ok(rt) => self.rt = Some(rt),
@@ -1469,6 +1586,71 @@ impl App {
         }
     }
 
+    /// Sorgt dafür, dass Gerät und Kompositionsfläche da sind. Nach einem
+    /// Geräteverlust (Treiber-Reset, Aufwachen, Monitor umgesteckt) baut das
+    /// beides neu — vorher blieb die Oberfläche in dem Fall für immer
+    /// unsichtbar: nur noch Glas, „als hätte der Browser nichts dahinter“.
+    fn ensure_composition(&mut self) -> bool {
+        if let Some(c) = &self.comp {
+            if !c.lost {
+                return true;
+            }
+            self.comp = None;
+        }
+        if self.comp_dev.is_none() {
+            if now_ms() < self.comp_retry_at {
+                // Noch nicht wieder versuchen — der Timer meldet sich.
+                return false;
+            }
+            self.comp_dev = self.gfx.create_comp_device();
+            if self.comp_dev.is_none() {
+                self.schedule_device_retry();
+                return false;
+            }
+        }
+        let rc = client_rect(self.hwnd);
+        if let Some(dev) = &self.comp_dev {
+            self.comp = self.gfx.create_composition(
+                dev,
+                self.hwnd,
+                rc.right as u32,
+                rc.bottom as u32,
+                self.scale,
+            );
+        }
+        if self.comp.is_none() {
+            // Das Gerät ist da, die Kette nicht — vermutlich doch verloren.
+            self.comp_dev = None;
+            self.schedule_device_retry();
+            return false;
+        }
+        // Frische Fläche: alle Bitmaps hingen am alten Gerät.
+        for t in &mut self.tabs {
+            t.favicon = None;
+        }
+        // Der Systemhintergrund gehört zum Fenster, nicht zur Fläche — aber
+        // nach einem Neuanfang des DWM schadet ein erneutes Anmelden nicht.
+        apply_backdrop(self.hwnd, self.glass, self.backdrop_kind);
+        true
+    }
+
+    /// Gerät und Fläche verwerfen; ein Timer stößt den Neuaufbau an.
+    fn on_device_lost(&mut self) {
+        self.comp = None;
+        self.comp_dev = None;
+        for t in &mut self.tabs {
+            t.favicon = None;
+        }
+        self.schedule_device_retry();
+    }
+
+    fn schedule_device_retry(&mut self) {
+        self.comp_retry_at = now_ms() + DEVICE_RETRY_MS;
+        unsafe {
+            let _ = SetTimer(Some(self.hwnd), TIMER_DEVICE, DEVICE_RETRY_MS as u32, None);
+        }
+    }
+
     fn paint_chrome(&mut self, rt: &ID2D1RenderTarget) {
         let theme = self.theme.clone();
         let rc = client_rect(self.hwnd);
@@ -1476,17 +1658,15 @@ impl App {
         let h = rc.bottom as f32 / self.scale;
         let top = self.top_h();
         let sw = if self.top_tabs { 0.0 } else { self.sidebar_w };
-        // On the composition surface our visual sits *above* the WebView child
-        // window, so the content area has to stay untouched — otherwise the
-        // chrome paints straight over the page.
-        let overlay = self.comp.is_some();
-        let content_x = if self.fs_element { w } else { self.content_left_eff() };
         unsafe {
-            if overlay {
-                rt.Clear(None);
-            } else {
-                rt.Clear(Some(&theme.bg));
-            }
+            // Grundierung. Unsere Fläche liegt *unter* der Seite (siehe
+            // gfx::Composition): wo die Seite steht, verdeckt sie das; wo sie
+            // fehlt — Tab wechselt gerade, Fenster wächst, Leiste wird
+            // gezogen, Ansicht startet noch — sieht man diese Farbe statt des
+            // Schreibtischs. Bei Glas ist sie durchscheinend, dann kommt der
+            // Systemhintergrund durch. Jede Fläche genau einmal, sonst
+            // addieren sich die Alphawerte.
+            rt.Clear(None);
 
             // ---- topbar ----
             if let Ok(b) = brush(rt, theme.bg_top) {
@@ -1500,53 +1680,9 @@ impl App {
                 }
             }
 
-            // Gap between the sidebar and the page while the sidebar animates.
-            if overlay && content_x > sw {
-                if let Ok(b) = brush(rt, theme.bg) {
-                    rt.FillRectangle(&rect_f(sw, top, content_x - sw, h - top), &b);
-                }
-            }
-
-            // Solange die Ansicht des aktiven Tabs noch nicht steht, klafft im
-            // Inhaltsbereich ein durchsichtiges Loch — auf dem Bildschirm ein
-            // schwarzes Rechteck. Bis der Tab seine eigene Fläche mitbringt,
-            // legen wir die Farbe des Fensters darunter.
-            let waiting = self
-                .tabs
-                .get(self.active)
-                .map(|t| !t.painted)
-                .unwrap_or(true);
-            if overlay && waiting {
-                if let Ok(b) = brush(rt, theme.bg) {
-                    rt.FillRectangle(&rect_f(content_x, top, w - content_x, h - top), &b);
-                }
-            }
-
-            // Beim Vergrößern des Fensters (oder Ziehen der Leiste) hinkt die
-            // Seite ihren neuen Maßen hinterher — der noch nicht bedeckte Rest
-            // des Inhaltsbereichs wäre durchsichtig, auf dem Bildschirm ein
-            // schwarzer Streifen. Bis die Seite nachgezogen hat, bekommt er die
-            // Farbe des Fensters.
-            if overlay && !waiting && self.split.is_none() {
-                if let Some(lb) = self.tabs.get(self.active).and_then(|t| t.last_bounds) {
-                    let s = self.scale;
-                    let c = self.layout.content;
-                    let (cl, ct) = (c.left as f32 / s, c.top as f32 / s);
-                    let (cr, cb) = (c.right as f32 / s, c.bottom as f32 / s);
-                    let (lr, lbot) = (lb.right as f32 / s, lb.bottom as f32 / s);
-                    let ll = lb.left as f32 / s;
-                    if let Ok(b) = brush(rt, theme.bg) {
-                        if lr < cr - 0.5 {
-                            rt.FillRectangle(&rect_f(lr, ct, cr - lr, cb - ct), &b);
-                        }
-                        if lbot < cb - 0.5 {
-                            rt.FillRectangle(&rect_f(cl, lbot, cr - cl, cb - lbot), &b);
-                        }
-                        if ll > cl + 0.5 {
-                            rt.FillRectangle(&rect_f(cl, ct, ll - cl, cb - ct), &b);
-                        }
-                    }
-                }
+            // ---- Inhaltsbereich (unter der Seite) ----
+            if let Ok(b) = brush(rt, theme.bg) {
+                rt.FillRectangle(&rect_f(sw, top, w - sw, h - top), &b);
             }
 
             // ---- separators ----
@@ -1664,9 +1800,10 @@ impl App {
                     if let Some((_, cr)) = self.layout.tab_close.iter().find(|(ti, _)| *ti == i) {
                         let cr = *cr;
                         let ct = self.hover_t(Hot::TabClose(i));
-                        if ct > 0.0 {
+                        let cp = self.press_t(Hot::TabClose(i));
+                        if ct > 0.0 || cp > 0.0 {
                             let mut c = theme.danger;
-                            c.a = 0.16 * ct;
+                            c.a = (0.16 * ct + 0.18 * cp).min(0.4);
                             if let Ok(b) = brush(rt, c) {
                                 rt.FillRoundedRectangle(&rounded(cr, R_XS), &b);
                             }
@@ -1754,12 +1891,12 @@ impl App {
         let can_back = active_tab.map(|t| t.can_back).unwrap_or(false);
         let can_fwd = active_tab.map(|t| t.can_fwd).unwrap_or(false);
         let loading = active_tab.map(|t| t.loading).unwrap_or(false);
-        self.icon_button(rt, theme, l.back, "\u{E72B}", can_back, self.hover_t(Hot::Back));
-        self.icon_button(rt, theme, l.fwd, "\u{E72A}", can_fwd, self.hover_t(Hot::Fwd));
+        self.icon_button_p(rt, theme, l.back, "\u{E72B}", can_back, self.hover_t(Hot::Back), self.press_t(Hot::Back));
+        self.icon_button_p(rt, theme, l.fwd, "\u{E72A}", can_fwd, self.hover_t(Hot::Fwd), self.press_t(Hot::Fwd));
         let glyph = if loading { "\u{E711}" } else { "\u{E72C}" };
-        self.icon_button(rt, theme, l.reload, glyph, true, self.hover_t(Hot::Reload));
-        self.icon_button(rt, theme, l.downloads, "\u{E896}", true, self.hover_t(Hot::Downloads));
-        self.icon_button(rt, theme, l.menu, "\u{E712}", true, self.hover_t(Hot::Menu));
+        self.icon_button_p(rt, theme, l.reload, glyph, true, self.hover_t(Hot::Reload), self.press_t(Hot::Reload));
+        self.icon_button_p(rt, theme, l.downloads, "\u{E896}", true, self.hover_t(Hot::Downloads), self.press_t(Hot::Downloads));
+        self.icon_button_p(rt, theme, l.menu, "\u{E712}", true, self.hover_t(Hot::Menu), self.press_t(Hot::Menu));
         self.paint_shield(rt, theme);
     }
 
@@ -1767,6 +1904,7 @@ impl App {
     fn paint_shield(&self, rt: &ID2D1RenderTarget, theme: &Theme) {
         let r = self.layout.shield;
         let t = self.hover_t(Hot::Shield);
+        let p = self.press_t(Hot::Shield);
         let tab = self.tabs.get(self.active);
         let host = tab.map(|t| host_of(&t.url)).unwrap_or_default();
         let on = crate::adblock::is_enabled() && !crate::adblock::is_allowlisted(&host);
@@ -1777,12 +1915,23 @@ impl App {
                     rt.FillRoundedRectangle(&rounded(r, R_MD), &b);
                 }
             }
+            if p > 0.0 {
+                if let Ok(b) = brush(rt, theme.press_at(p)) {
+                    rt.FillRoundedRectangle(&rounded(r, R_MD), &b);
+                }
+            }
             let c = if on { theme.accent_f } else { theme.text_dim };
             if let Ok(b) = brush(rt, c) {
                 let g: Vec<u16> = if on { "\u{EA18}" } else { "\u{F140}" }.encode_utf16().collect();
                 self.fmt_icon.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).ok();
                 self.fmt_icon.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
+                if p > 0.0 {
+                    rt.SetTransform(&press_transform(r, p));
+                }
                 rt.DrawText(&g, &self.fmt_icon, &r, &b, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                if p > 0.0 {
+                    rt.SetTransform(&identity());
+                }
             }
             if on && n > 0 {
                 let label = if n > 99 { "99+".to_string() } else { n.to_string() };
@@ -1801,10 +1950,19 @@ impl App {
         }
     }
 
-    fn icon_button(&self, rt: &ID2D1RenderTarget, theme: &Theme, r: D2D_RECT_F, glyph: &str, enabled: bool, hot: f32) {
+    /// Symbolknopf mit Berührung `hot` und Druckstärke `press` (je 0..1): der
+    /// Druck macht die Fläche eine Stufe dunkler und zieht das Symbol ein
+    /// wenig zusammen — der Knopf gibt sichtbar nach, wie eine Schaltfläche
+    /// im Web.
+    fn icon_button_p(&self, rt: &ID2D1RenderTarget, theme: &Theme, r: D2D_RECT_F, glyph: &str, enabled: bool, hot: f32, press: f32) {
         unsafe {
             if hot > 0.0 && enabled {
                 if let Ok(b) = brush(rt, theme.hover_at(hot)) {
+                    rt.FillRoundedRectangle(&rounded(r, R_SM), &b);
+                }
+            }
+            if press > 0.0 && enabled {
+                if let Ok(b) = brush(rt, theme.press_at(press)) {
                     rt.FillRoundedRectangle(&rounded(r, R_SM), &b);
                 }
             }
@@ -1813,6 +1971,10 @@ impl App {
                 let text: Vec<u16> = glyph.encode_utf16().collect();
                 self.fmt_icon.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).ok();
                 self.fmt_icon.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
+                let squeezed = press > 0.0 && enabled;
+                if squeezed {
+                    rt.SetTransform(&press_transform(r, press));
+                }
                 rt.DrawText(
                     &text,
                     &self.fmt_icon,
@@ -1821,6 +1983,9 @@ impl App {
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
+                if squeezed {
+                    rt.SetTransform(&identity());
+                }
             }
         }
     }
@@ -1970,14 +2135,24 @@ impl App {
             let star_glyph = if bookmarked { "\u{E735}" } else { "\u{E734}" };
             let star_color = if bookmarked { theme.accent_f } else { theme.text_dim };
             let star_t = self.hover_t(Hot::Star);
+            let star_p = self.press_t(Hot::Star);
             if star_t > 0.0 {
                 if let Ok(b) = brush(rt, theme.hover_at(star_t)) {
+                    rt.FillRoundedRectangle(&rounded(self.layout.star, R_SM), &b);
+                }
+            }
+            if star_p > 0.0 {
+                if let Ok(b) = brush(rt, theme.press_at(star_p)) {
                     rt.FillRoundedRectangle(&rounded(self.layout.star, R_SM), &b);
                 }
             }
             if let Ok(b) = brush(rt, star_color) {
                 let t: Vec<u16> = star_glyph.encode_utf16().collect();
                 self.fmt_icon_sm.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).ok();
+                self.fmt_icon_sm.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
+                if star_p > 0.0 {
+                    rt.SetTransform(&press_transform(self.layout.star, star_p));
+                }
                 rt.DrawText(
                     &t,
                     &self.fmt_icon_sm,
@@ -1986,6 +2161,9 @@ impl App {
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
+                if star_p > 0.0 {
+                    rt.SetTransform(&identity());
+                }
             }
         }
     }
@@ -2001,9 +2179,17 @@ impl App {
             unsafe {
                 let hovered = self.hot == hot;
                 let t = self.hover_t(hot);
+                let p = self.press_t(hot);
                 if t > 0.0 {
                     let mut c = if kind == 3 { theme.danger } else { theme.hover };
                     c.a *= if kind == 3 { t } else { t * 1.4 };
+                    if let Ok(b) = brush(rt, c) {
+                        rt.FillRoundedRectangle(&rounded(r, R_SM), &b);
+                    }
+                }
+                if p > 0.0 {
+                    // Gedrückt: Schließen wird tiefrot, die anderen eine Stufe dunkler.
+                    let c = if kind == 3 { color(0, 0, 0, 0.22 * p) } else { theme.press_at(p) };
                     if let Ok(b) = brush(rt, c) {
                         rt.FillRoundedRectangle(&rounded(r, R_SM), &b);
                     }
@@ -2049,8 +2235,14 @@ impl App {
             let cy = (orb.top + orb.bottom) / 2.0;
             let cx = if collapsed { (orb.left + orb.right) / 2.0 } else { orb.left + 18.0 };
             let orb_t = self.hover_t(Hot::Orb);
+            let orb_p = self.press_t(Hot::Orb);
             if orb_t > 0.0 {
                 if let Ok(b) = brush(rt, theme.hover_at(orb_t)) {
+                    rt.FillRoundedRectangle(&rounded(orb, R_MD), &b);
+                }
+            }
+            if orb_p > 0.0 {
+                if let Ok(b) = brush(rt, theme.press_at(orb_p)) {
                     rt.FillRoundedRectangle(&rounded(orb, R_MD), &b);
                 }
             }
@@ -2069,7 +2261,7 @@ impl App {
                     None,
                     &gs,
                 ) {
-                    rt.FillEllipse(&ellipse(cx, cy, 11.0 + orb_t * 1.0), &gb);
+                    rt.FillEllipse(&ellipse(cx, cy, 11.0 + orb_t * 1.0 - orb_p * 1.5), &gb);
                 }
             }
             if !collapsed {
@@ -2248,9 +2440,10 @@ impl App {
                         if let Some((_, cr)) = self.layout.tab_close.iter().find(|(ti, _)| *ti == i) {
                             let cr = *cr;
                             let ct = self.hover_t(Hot::TabClose(i));
-                            if ct > 0.0 {
+                            let cp = self.press_t(Hot::TabClose(i));
+                            if ct > 0.0 || cp > 0.0 {
                                 let mut c = theme.danger;
-                                c.a = 0.16 * ct;
+                                c.a = (0.16 * ct + 0.18 * cp).min(0.4);
                                 if let Ok(b) = brush(rt, c) {
                                     rt.FillRoundedRectangle(&rounded(cr, R_XS), &b);
                                 }
@@ -2335,8 +2528,14 @@ impl App {
     ) {
         unsafe {
             let t = self.hover_t(hot);
+            let p = self.press_t(hot);
             if t > 0.0 {
                 if let Ok(b) = brush(rt, theme.hover_at(t)) {
+                    rt.FillRoundedRectangle(&rounded(r, R_SM), &b);
+                }
+            }
+            if p > 0.0 {
+                if let Ok(b) = brush(rt, theme.press_at(p)) {
                     rt.FillRoundedRectangle(&rounded(r, R_SM), &b);
                 }
             }
@@ -2346,7 +2545,13 @@ impl App {
                 self.fmt_icon.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).ok();
                 self.fmt_icon.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
                 let ir = if collapsed { r } else { rect_f(r.left, r.top, 34.0, h) };
+                if p > 0.0 {
+                    rt.SetTransform(&press_transform(ir, p));
+                }
                 rt.DrawText(&g, &self.fmt_icon, &ir, &b, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                if p > 0.0 {
+                    rt.SetTransform(&identity());
+                }
             }
             if !collapsed {
                 if let Ok(b) = brush(rt, theme.text) {
@@ -2424,6 +2629,108 @@ impl App {
         }
     }
 
+    /// Druckstärke (0..1) eines Elements — siehe `press_hot`/`press_t`.
+    fn press_t(&self, h: Hot) -> f32 {
+        if h != Hot::None && self.press_hot == h {
+            self.press_t
+        } else {
+            0.0
+        }
+    }
+
+    /// Maustaste gedrückt. Tabs schalten sofort um (wie in Chrome — man
+    /// will beim Drücken schon dort sein); alles andere zeigt den Druck und
+    /// löst erst beim Loslassen aus, wenn der Zeiger noch darauf steht. So
+    /// lässt sich ein Fehlgriff durch Wegziehen noch abbrechen, und der Knopf
+    /// gibt sichtbar nach, bevor etwas passiert.
+    fn mouse_down(&mut self, x: f32, y: f32) {
+        // Nicht dem letzten Hover trauen: die Fläche kann sich seit der
+        // letzten Bewegung verschoben haben.
+        let hot = self.hit(x, y);
+        if hot != self.hot {
+            self.set_hot(hot);
+        }
+        self.pressed = hot;
+        match hot {
+            Hot::SbEdge => {
+                self.begin_sidebar_drag(x);
+                return;
+            }
+            // Klick in die schon offene Adressleiste setzt die Marke,
+            // statt den Text erneut ganz auszuwählen. Eine Eingabe bekommt
+            // den Fokus beim Drücken, wie überall.
+            Hot::Omnibox => {
+                if self.editing {
+                    let i = self.omnibox_index_at(x);
+                    self.omni.caret = i;
+                    self.omni.anchor = i;
+                    self.omni.blink_from = now_ms();
+                    self.omni_drag = true;
+                    unsafe {
+                        SetCapture(self.hwnd);
+                    }
+                    self.paint_now(false);
+                } else {
+                    self.begin_edit();
+                }
+                return;
+            }
+            Hot::None => {
+                if self.editing {
+                    self.end_edit(false);
+                }
+                return;
+            }
+            Hot::Tab(i) => {
+                self.activate_tab(i);
+            }
+            _ => {}
+        }
+        // Der Druck erscheint sofort, ohne Übergang.
+        self.press_hot = hot;
+        self.press_t = 1.0;
+        // Den Druck bis zum Loslassen verfolgen, auch außerhalb des Fensters.
+        unsafe {
+            SetCapture(self.hwnd);
+        }
+        self.mouse_captured = true;
+        self.start_anim();
+        self.paint_now(false);
+    }
+
+    /// Maustaste losgelassen: der Druck klingt ab, und wenn der Zeiger noch
+    /// auf dem gedrückten Element steht, wird es ausgelöst.
+    fn mouse_up(&mut self, x: f32, y: f32) {
+        if self.omni_drag {
+            self.omni_drag = false;
+            unsafe {
+                let _ = ReleaseCapture();
+            }
+        }
+        self.end_sidebar_drag();
+        let was = self.pressed;
+        self.pressed = Hot::None;
+        if self.mouse_captured {
+            self.mouse_captured = false;
+            unsafe {
+                let _ = ReleaseCapture();
+            }
+        }
+        if was == Hot::None {
+            return;
+        }
+        let over = self.hit(x, y);
+        if over != self.hot {
+            self.set_hot(over);
+        }
+        // Der Druck ist vorbei — von hier an blendet er aus.
+        self.start_anim();
+        if over == was && !matches!(was, Hot::Tab(_) | Hot::Omnibox | Hot::SbEdge) {
+            self.on_click(was);
+        }
+        self.paint();
+    }
+
     fn on_mouse_move(&mut self, x: f32, y: f32) {
         if self.sb_drag.is_some() {
             self.drag_sidebar(x);
@@ -2436,7 +2743,7 @@ impl App {
             return;
         }
         // Optional: sidebar unfolds while the pointer rests on it.
-        if self.storage.get_setting("sidebar_hover", "0") == "1" && !self.editing {
+        if self.sidebar_hover && !self.editing && self.pressed == Hot::None {
             let inside = x < self.sidebar_w + 4.0;
             if inside && !self.expanded {
                 self.toggle_sidebar();
@@ -2718,10 +3025,11 @@ impl App {
             }
             "/click" => {
                 // Klick auf die eigene Oberfläche – ohne Maus, ohne Fokus.
+                // Drücken und Loslassen an derselben Stelle, wie ein echter Klick.
                 let (x, y) = (num("x").unwrap_or(0) as f32, num("y").unwrap_or(0) as f32);
                 let hot = self.hit(x, y);
-                self.set_hot(hot);
-                self.on_click(hot);
+                self.mouse_down(x, y);
+                self.mouse_up(x, y);
                 Response::json(json!({ "ok": true, "hit": format!("{hot:?}") }))
             }
             "/mouse" => {
@@ -2730,17 +3038,8 @@ impl App {
                 let (x, y) = (num("x").unwrap_or(0) as f32, num("y").unwrap_or(0) as f32);
                 match arg("action").unwrap_or_default().as_str() {
                     "move" => self.on_mouse_move(x, y),
-                    "down" => {
-                        let hot = self.hit(x, y);
-                        self.set_hot(hot);
-                        self.pressed = hot;
-                        if hot == Hot::SbEdge {
-                            self.begin_sidebar_drag(x);
-                        } else {
-                            self.on_click(hot);
-                        }
-                    }
-                    "up" => self.end_sidebar_drag(),
+                    "down" => self.mouse_down(x, y),
+                    "up" => self.mouse_up(x, y),
                     _ => {
                         crate::devtools::put_response(Response::error(
                             400,
@@ -2847,7 +3146,7 @@ impl App {
             let rt = c.target();
             self.paint_chrome(&rt);
             let shot = self.comp.as_ref()?.read_back();
-            let _ = self.comp.as_ref()?.end();
+            let _ = self.comp.as_mut()?.end(false);
             shot?
         };
 
@@ -3088,15 +3387,15 @@ impl App {
     }
 
     // ---------------- animation ----------------
+    /// Bewegung an: ab jetzt kommt je Bild des Fensterverwalters ein
+    /// WM_FRAME (siehe [`crate::gfx::FrameClock`]), bis alles zur Ruhe kommt.
     fn start_anim(&mut self) {
         if self.anim_on {
             return;
         }
         self.anim_on = true;
-        self.anim_last = now_ms();
-        unsafe {
-            let _ = SetTimer(Some(self.hwnd), TIMER_ANIM, 8, None);
-        }
+        self.anim_last = std::time::Instant::now();
+        self.frame.set_active(true);
     }
 
     fn stop_anim(&mut self) {
@@ -3104,9 +3403,7 @@ impl App {
             return;
         }
         self.anim_on = false;
-        unsafe {
-            let _ = KillTimer(Some(self.hwnd), TIMER_ANIM);
-        }
+        self.frame.set_active(false);
     }
 
     /// Hover intensity (0..1) for a chrome element; cross-fades on change.
@@ -3123,11 +3420,32 @@ impl App {
     }
 
     fn anim_tick(&mut self) {
-        let now = now_ms();
-        let dt = (now.saturating_sub(self.anim_last)) as f32 / 1000.0; // Sekunden
+        // Echte Zeit seit dem letzten Schritt. GetTickCount hätte hier eine
+        // Auflösung von 16 ms — halb so grob wie ein Bild, die Federn würden
+        // ruckeln.
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(self.anim_last).as_secs_f32().min(0.1);
         self.anim_last = now;
         let mut busy = false;
         let mut needs_layout = false;
+
+        // Der Druck: voll, solange gehalten und berührt; sonst klingt er ab.
+        if self.press_hot != Hot::None {
+            let held = self.pressed != Hot::None && self.pressed == self.press_hot && self.hot == self.press_hot;
+            if held {
+                self.press_t = 1.0;
+            } else if self.press_t > 0.0 {
+                let tau = if self.pressed != Hot::None { 0.06 } else { TAU_PRESS_OUT };
+                self.press_t = approach(self.press_t, 0.0, dt, tau);
+                if self.press_t < 0.01 {
+                    self.press_t = 0.0;
+                    if self.pressed == Hot::None {
+                        self.press_hot = Hot::None;
+                    }
+                }
+                busy |= self.press_t > 0.0;
+            }
+        }
 
         // Breite der Seitenleiste. Als Feder, damit ein Umschalten mitten in
         // der Bewegung weich abbiegt statt neu anzusetzen.
@@ -3200,8 +3518,8 @@ impl App {
             busy |= self.hot_t < 1.0;
         }
         if self.hot_prev_t > 0.0 {
-            self.hot_prev_t = approach(self.hot_prev_t, 0.0, dt, TAU_HOVER);
-            if self.hot_prev_t < 0.002 {
+            self.hot_prev_t = approach(self.hot_prev_t, 0.0, dt, TAU_HOVER_OUT);
+            if self.hot_prev_t < 0.004 {
                 self.hot_prev_t = 0.0;
             }
             busy |= self.hot_prev_t > 0.0;
@@ -3232,7 +3550,9 @@ impl App {
         if needs_layout {
             self.relayout();
         }
-        self.paint();
+        // Sofort malen: wir stehen direkt hinter einem Bildwechsel, das Bild
+        // kommt so beim nächsten auf den Schirm.
+        self.paint_now(false);
         if !busy {
             self.stop_anim();
         }
@@ -3346,10 +3666,19 @@ impl App {
         }
         self.active = idx;
         self.scroll_into_view(idx);
+        self.tabs[idx].last_active = now_ms();
+
+        // Erst die Oberfläche: die Zeile springt sofort um, die Marke setzt
+        // sich in Bewegung — noch bevor die Ansichten umgeschaltet werden.
+        // Das Umschalten (Sichtbarkeit, Maße, Fokus) sind Aufrufe in den
+        // Browserprozess, die auf schweren Seiten spürbar dauern; die Antwort
+        // auf den Klick soll nicht daran hängen.
+        self.start_anim();
+        self.paint_now(false);
+
         // Session-restored tabs boot on first use.
         self.ensure_controller(idx);
         let tab = &mut self.tabs[idx];
-        tab.last_active = now_ms();
         if tab.asleep {
             if let Some(wv) = &tab.webview {
                 if let Ok(wv3) = wv.cast::<ICoreWebView2_3>() {
@@ -3690,6 +4019,7 @@ impl App {
                     self.navigate(i, &url);
                 }
             }
+            AppMsg::ProcessFailed { tab, kind } => self.on_process_failed(tab, kind),
             AppMsg::MenuAction { action } => {
                 if let Some(p) = self.menu_popup.take() {
                     p.close();
@@ -3718,6 +4048,54 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Ein Prozess der Ansicht ist weg. Wie das WebView2-Beispiel von
+    /// Microsoft: Renderer weg → Seite neu laden; Browserprozess weg oder
+    /// Renderer eingefroren → Ansicht neu anlegen. Höchstens einmal je paar
+    /// Sekunden, sonst dreht eine dauerhaft abstürzende Seite eine Schleife.
+    fn on_process_failed(&mut self, tab_id: u32, kind: i32) {
+        const RENDER_EXITED: i32 = 1;
+        const RENDER_UNRESPONSIVE: i32 = 2;
+        const BROWSER_EXITED: i32 = 0;
+        let Some(i) = self.tab_index_by_id(tab_id) else { return };
+        let now = now_ms();
+        {
+            let t = &mut self.tabs[i];
+            if now.saturating_sub(t.last_recover) < 5_000 {
+                return;
+            }
+            t.last_recover = now;
+        }
+        match kind {
+            RENDER_EXITED => {
+                if let Some(wv) = &self.tabs[i].webview {
+                    unsafe {
+                        let _ = wv.Reload();
+                    }
+                }
+            }
+            RENDER_UNRESPONSIVE | BROWSER_EXITED => {
+                // Ansicht abreißen und neu anlegen; die Adresse bleibt.
+                let t = &mut self.tabs[i];
+                let url = t.url.clone();
+                if let Some(ctl) = t.controller.take() {
+                    unsafe {
+                        let _ = ctl.Close();
+                    }
+                }
+                t.webview = None;
+                t.guards.clear();
+                t.last_bounds = None;
+                t.last_visible = None;
+                t.spawning = false;
+                t.painted = false;
+                t.pending_url = Some(url);
+                self.ensure_controller(i);
+            }
+            _ => {}
+        }
+        self.paint();
     }
 
     /// Gibt einer frisch erzeugten Ansicht die Farben des Browsers mit.
@@ -4923,14 +5301,74 @@ impl App {
         self.storage.save_session(&session);
     }
 
-    pub fn apply_theme(&mut self, mode: ThemeMode) {
-        self.theme_mode = mode;
+    pub fn set_sidebar_hover(&mut self, on: bool) {
+        self.sidebar_hover = on;
+    }
+
+    /// Kann dieses Fenster auf diesem Windows überhaupt Glas zeigen?
+    pub fn glass_possible(&self) -> bool {
+        self.comp_capable && self.comp.is_some() && self.backdrop_ok
+    }
+
+    /// Zeichnet Windows gerade Transparenzeffekte?
+    pub fn effects_on(&self) -> bool {
+        effects_enabled()
+    }
+
+    /// Baut die Farben neu aus Modus, Akzent und Glaszustand.
+    pub fn rebuild_theme(&mut self) {
         let accent = self.theme.accent;
         let rm = self.theme.reduce_motion;
-        self.theme = Theme::new(mode, accent, rm);
+        self.theme = Theme::new(self.theme_mode, accent, rm);
         if self.glass {
             self.theme.glassify();
         }
+    }
+
+    /// Glas an oder aus, mit Stil — sofort, ohne Neustart. Das Fenster hat
+    /// die Kompositionsfläche ohnehin; nur Systemhintergrund und Alphawerte
+    /// wechseln.
+    pub fn set_glass(&mut self, wanted: bool, style: &str) {
+        self.glass_wanted = wanted;
+        self.backdrop_kind = backdrop_kind_of(style);
+        self.refresh_glass_ex(true);
+    }
+
+    /// Prüft, ob Glas gerade möglich ist (Fläche da, Windows kann den
+    /// Hintergrund, Transparenzeffekte an) und stellt Fenster und Farben
+    /// entsprechend. Läuft bei jeder Änderung der Systemeinstellungen —
+    /// schaltet Windows die Effekte ab (Energiesparen), wird die Fläche
+    /// deckend, statt den Schreibtisch durchscheinen zu lassen.
+    pub fn refresh_glass(&mut self) {
+        self.refresh_glass_ex(false);
+    }
+
+    fn refresh_glass_ex(&mut self, force: bool) {
+        let possible = self.comp_capable && self.comp.is_some() && self.backdrop_ok;
+        let glass = self.glass_wanted && possible && effects_enabled();
+        let changed = glass != self.glass;
+        if !changed && !force {
+            return;
+        }
+        self.glass = glass;
+        apply_backdrop(self.hwnd, glass, self.backdrop_kind);
+        if changed {
+            self.rebuild_theme();
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ(self.edit_brush.0));
+                let (fg, bg) = edit_colors(&self.theme);
+                self.edit_fg = fg;
+                self.edit_bg = bg;
+                self.edit_brush = CreateSolidBrush(bg);
+            }
+            self.redress_webviews();
+        }
+        self.paint();
+    }
+
+    pub fn apply_theme(&mut self, mode: ThemeMode) {
+        self.theme_mode = mode;
+        self.rebuild_theme();
         unsafe {
             let dark = BOOL(self.theme.dark as i32);
             let _ = DwmSetWindowAttribute(
@@ -4965,6 +5403,83 @@ impl App {
     }
 }
 
+/// Einstellung „glass_style“ → DWMSBT_*-Wert.
+fn backdrop_kind_of(style: &str) -> i32 {
+    match style {
+        "mica" => 2,   // DWMSBT_MAINWINDOW
+        "tabbed" => 4, // DWMSBT_TABBEDWINDOW
+        _ => 3,        // DWMSBT_TRANSIENTWINDOW (Acryl)
+    }
+}
+
+/// Meldet dem Fensterverwalter, was hinter dem Fenster liegen soll: bei Glas
+/// der Systemhintergrund über die ganze Fläche (Rahmen bis −1 ausgedehnt),
+/// sonst nichts — dann muss die Oberfläche selbst deckend malen. Beides lässt
+/// sich jederzeit umstellen, nicht nur beim Anlegen des Fensters.
+fn apply_backdrop(hwnd: HWND, glass: bool, kind: i32) {
+    unsafe {
+        let margins = if glass {
+            MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 }
+        } else {
+            MARGINS { cxLeftWidth: 0, cxRightWidth: 0, cyTopHeight: 1, cyBottomHeight: 0 }
+        };
+        let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+        let backdrop: i32 = if glass { kind } else { DWMSBT_NONE };
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            &backdrop as *const _ as *const _,
+            4,
+        );
+    }
+}
+
+/// Zeichnet Windows gerade Transparenzeffekte? Maßgeblich ist
+/// `UISettings.AdvancedEffectsEnabled` — das ist auch dann falsch, wenn der
+/// Energiesparmodus die Effekte abgeschaltet hat, ohne die Einstellung zu
+/// ändern. Kommt WinRT nicht in Frage, entscheidet die Registrierung.
+fn effects_enabled() -> bool {
+    use windows::UI::ViewManagement::UISettings;
+    match UISettings::new().and_then(|u| u.AdvancedEffectsEnabled()) {
+        Ok(on) => on,
+        Err(_) => crate::theme::system_transparency(),
+    }
+}
+
+/// Lässt sich melden, wenn Windows die Transparenzeffekte umschaltet. Die
+/// Meldung kommt auf einem fremden Thread und wird als WM_EFFECTS ins
+/// Fenster gereicht.
+fn watch_effects(hwnd: HWND) -> Option<windows::UI::ViewManagement::UISettings> {
+    use windows::Foundation::TypedEventHandler;
+    use windows::UI::ViewManagement::UISettings;
+    let ui = UISettings::new().ok()?;
+    let target = hwnd.0 as isize;
+    let handler = TypedEventHandler::<UISettings, windows::core::IInspectable>::new(move |_, _| {
+        unsafe {
+            let _ = PostMessageW(Some(HWND(target as *mut _)), WM_EFFECTS, WPARAM(0), LPARAM(0));
+        }
+        Ok(())
+    });
+    ui.AdvancedEffectsEnabledChanged(&handler).ok()?;
+    Some(ui)
+}
+
+/// Verschiebung für ein gedrücktes Symbol: um die Mitte von `r` auf
+/// 100 − 8·press Prozent zusammengezogen.
+fn press_transform(r: D2D_RECT_F, press: f32) -> windows_numerics::Matrix3x2 {
+    let s = 1.0 - 0.08 * press.clamp(0.0, 1.0);
+    let (cx, cy) = ((r.left + r.right) / 2.0, (r.top + r.bottom) / 2.0);
+    windows_numerics::Matrix3x2 {
+        M11: s, M12: 0.0,
+        M21: 0.0, M22: s,
+        M31: cx * (1.0 - s), M32: cy * (1.0 - s),
+    }
+}
+
+fn identity() -> windows_numerics::Matrix3x2 {
+    windows_numerics::Matrix3x2 { M11: 1.0, M12: 0.0, M21: 0.0, M22: 1.0, M31: 0.0, M32: 0.0 }
+}
+
 /// Farben des Adressfeldes, aus demselben Farbsatz wie alles andere.
 ///
 /// Das Feld ist ein echtes Kindfenster und liegt im Loch, das die Oberfläche
@@ -4995,7 +5510,10 @@ fn register_classes(hinst: HINSTANCE) -> Result<()> {
     let icon = unsafe { LoadIconW(Some(hinst), PCWSTR(1 as *const u16)) }.unwrap_or_default();
     let wc = WNDCLASSEXW {
         cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-        style: CS_HREDRAW | CS_VREDRAW,
+        // Kein CS_HREDRAW/CS_VREDRAW: die würden bei jeder Größenänderung das
+        // ganze Fenster ungültig machen und ein zweites WM_PAINT nach dem
+        // WM_SIZE-Bild auslösen. Gemalt wird ohnehin komplett und selbst.
+        style: CS_DBLCLKS,
         lpfnWndProc: Some(wndproc),
         cbClsExtra: 0,
         cbWndExtra: 0,
