@@ -185,7 +185,12 @@ fn create(app: &App, kind: PopupKind, x: i32, y: i32, activate: bool) -> Option<
     }
 
     let class = wide("AuraPopup");
-    let mut ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
+    // Kein WS_EX_TOPMOST: das legte Vorschläge und Menüs über *jedes* Fenster
+    // auf dem Schreibtisch, auch über fremde Anwendungen, und sie blieben dort
+    // stehen, wenn Aura in den Hintergrund ging. Stattdessen gehört das Fenster
+    // dem Hauptfenster — dann liegt es immer über Aura, nie über anderen
+    // Anwendungen, und verschwindet mit ihm.
+    let mut ex = WS_EX_LAYERED | WS_EX_TOOLWINDOW;
     if !activate {
         ex |= WS_EX_NOACTIVATE;
     }
@@ -196,7 +201,7 @@ fn create(app: &App, kind: PopupKind, x: i32, y: i32, activate: bool) -> Option<
             PCWSTR::null(),
             WS_POPUP,
             x, y, w, h,
-            None, None, Some(app.hinst), None,
+            Some(app.hwnd), None, Some(app.hinst), None,
         )
         .ok()?
     };

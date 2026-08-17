@@ -1,19 +1,19 @@
 // Theme: light/dark/system, accent color, DPI-independent cosmetic values.
 //
-// Die Farben stehen nicht einzeln nebeneinander, sondern kommen aus einer
-// zwölfstufigen Neutralskala mit festen Rollen — das Modell von Radix Colors,
-// das auch shadcn und Geist benutzen:
+// Die Farben sind Vercels Geist-Skala, ausgelesen von vercel.com selbst.
+// Geist ordnet den Stufen feste Aufgaben zu:
 //
-//   1  Fläche der Anwendung        7  Rand
-//   2  abgesetzte Fläche           8  starker Rand, Fokusring
-//   3  Bedienelement               9  Vollton (Akzent)
-//   4  Bedienelement berührt      10  Vollton berührt
-//   5  Bedienelement gewählt      11  Text, leise
-//   6  Trennlinie                 12  Text, deutlich
+//   background-200  Fläche der Anwendung   (dunkel reines Schwarz, hell Weiß)
+//   background-100  abgesetzte Fläche      (Menüs, Karten)
+//   gray-100..300   Bedienelement: ruhend, berührt, gewählt
+//   gray-400..600   Ränder: ruhend, berührt, gewählt
+//   gray-900        Text, leise
+//   gray-1000       Text, deutlich
+//   blue-700        die eine kräftige Farbe
 //
-// Dazu die Haltung von Stripe: eine einzige kräftige Farbe, die sich ihren
-// Auftritt verdient, Tiefe aus Flächenabstufung statt aus Schatten, und
-// Buchstabenabstand, der mit der Schriftgröße enger wird.
+// Die Haltung dahinter: sehr hoher Kontrast zwischen Grund und Schrift, dünne
+// ruhige Ränder, keine Farbe ohne Bedeutung. Tiefe kommt aus der Abstufung der
+// Flächen, nicht aus Schatten.
 use crate::gfx::color;
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 
@@ -30,19 +30,48 @@ pub const R_SM: f32 = 6.0;
 pub const R_MD: f32 = 8.0;
 pub const R_LG: f32 = 12.0;
 
-/// Radix „slate“, hell — Stufe 1 bis 12.
-const SLATE: [u32; 12] = [
-    0xfcfcfd, 0xf9f9fb, 0xf0f0f3, 0xe8e8ec, 0xe0e1e6, 0xd9d9e0, 0xcdced6, 0xb9bbc6, 0x8b8d98,
-    0x80838d, 0x60646c, 0x1c2024,
-];
-/// Radix „slate dark“ — Stufe 1 bis 12.
-const SLATE_DARK: [u32; 12] = [
-    0x111113, 0x18191b, 0x212225, 0x272a2d, 0x2e3135, 0x363a3f, 0x43484e, 0x5a6169, 0x696e77,
-    0x777b84, 0xb0b4ba, 0xedeef0,
-];
+/// Ein Satz Geist-Farben für eine Darstellung.
+struct Scale {
+    /// background-200 — die Fläche, auf der alles liegt.
+    bg: u32,
+    /// background-100 — was darüber schwebt.
+    surface: u32,
+    /// gray-100..300 — Bedienelement ruhend, berührt, gewählt.
+    ui: [u32; 3],
+    /// gray-400..600 — Rand ruhend, berührt, gewählt.
+    line: [u32; 3],
+    /// gray-900, gray-1000 — Text leise, Text deutlich.
+    dim: u32,
+    text: u32,
+    danger: u32,
+}
 
-fn step(scale: &[u32; 12], n: usize) -> D2D1_COLOR_F {
-    let v = scale[n - 1];
+/// Geist, dunkel. Reines Schwarz als Grund — das ist Vercels Kennzeichen.
+const DARK: Scale = Scale {
+    bg: 0x000000,
+    surface: 0x0a0a0a,
+    ui: [0x1a1a1a, 0x1f1f1f, 0x292929],
+    line: [0x2e2e2e, 0x454545, 0x878787],
+    dim: 0xa1a1a1,
+    text: 0xededed,
+    danger: 0xff6166,
+};
+
+/// Geist, hell.
+const LIGHT: Scale = Scale {
+    bg: 0xffffff,
+    surface: 0xfafafa,
+    ui: [0xf2f2f2, 0xebebeb, 0xe6e6e6],
+    line: [0xebebeb, 0xc9c9c9, 0xa8a8a8],
+    dim: 0x4c4c4c,
+    text: 0x171717,
+    danger: 0xcb2a2f,
+};
+
+/// Vercel-Blau (blue-700) — die Vorgabe, wenn der Nutzer nichts anderes wählt.
+pub const ACCENT_DEFAULT: (u8, u8, u8) = (0, 114, 245);
+
+fn rgb(v: u32) -> D2D1_COLOR_F {
     color(((v >> 16) & 255) as u8, ((v >> 8) & 255) as u8, (v & 255) as u8, 1.0)
 }
 
@@ -60,6 +89,10 @@ pub struct Theme {
     pub sidebar_bg: D2D1_COLOR_F,
     /// Stufe 3 — Eingabefelder, ruhende Bedienelemente.
     pub input_bg: D2D1_COLOR_F,
+    /// Stufe 3, immer deckend. Das Adressfeld ist ein echtes Kindfenster und
+    /// kann keine durchscheinende Fläche haben — `glassify` lässt diesen Wert
+    /// deshalb in Ruhe.
+    pub input_solid: D2D1_COLOR_F,
     /// Stufe 4 — berührt.
     pub hover: D2D1_COLOR_F,
     /// Stufe 5 — gewählt.
@@ -90,31 +123,32 @@ impl Theme {
             ThemeMode::Dark => true,
             ThemeMode::System => system_dark(),
         };
-        let s = if dark { &SLATE_DARK } else { &SLATE };
+        let s = if dark { &DARK } else { &LIGHT };
         let (ar, ag, ab) = accent;
         Theme {
             dark,
             accent,
             reduce_motion,
-            bg: step(s, 1),
-            bg_top: step(s, 1),
-            sidebar_bg: step(s, 1),
-            input_bg: step(s, 3),
-            hover: step(s, 4),
-            active: step(s, 5),
-            border: step(s, 6),
-            border_strong: step(s, 7),
-            text: step(s, 12),
-            text_dim: step(s, 11),
+            bg: rgb(s.bg),
+            bg_top: rgb(s.bg),
+            sidebar_bg: rgb(s.bg),
+            input_bg: rgb(s.ui[0]),
+            input_solid: rgb(s.ui[0]),
+            hover: rgb(s.ui[1]),
+            active: rgb(s.ui[2]),
+            border: rgb(s.line[0]),
+            border_strong: rgb(s.line[1]),
+            text: rgb(s.text),
+            text_dim: rgb(s.dim),
             accent_f: color(ar, ag, ab, 1.0),
             accent_soft: color(ar, ag, ab, if dark { 0.18 } else { 0.13 }),
             on_accent: if luminance(accent) > 0.58 {
-                color(9, 9, 11, 1.0)
+                color(0, 0, 0, 1.0)
             } else {
                 color(255, 255, 255, 1.0)
             },
-            popup_bg: step(s, 2),
-            danger: if dark { color(255, 99, 105, 1.0) } else { color(206, 44, 49, 1.0) },
+            popup_bg: rgb(s.surface),
+            danger: rgb(s.danger),
         }
     }
 
@@ -135,11 +169,11 @@ impl Theme {
             self.border = color(255, 255, 255, 0.12);
             self.border_strong = color(255, 255, 255, 0.18);
         } else {
-            self.input_bg = color(28, 32, 36, 0.05);
-            self.hover = color(28, 32, 36, 0.07);
-            self.active = color(28, 32, 36, 0.11);
-            self.border = color(28, 32, 36, 0.12);
-            self.border_strong = color(28, 32, 36, 0.18);
+            self.input_bg = color(0, 0, 0, 0.05);
+            self.hover = color(0, 0, 0, 0.07);
+            self.active = color(0, 0, 0, 0.11);
+            self.border = color(0, 0, 0, 0.12);
+            self.border_strong = color(0, 0, 0, 0.18);
         }
     }
 

@@ -130,6 +130,8 @@ pub enum AppMsg {
     Title { tab: u32, title: String },
     Source { tab: u32, url: String },
     NavCompleted { tab: u32, url: String, title: String, can_back: bool, can_fwd: bool },
+    /// Die Ansicht des Tabs hat zum ersten Mal Inhalt.
+    TabPainted { tab: u32 },
     Favicon { tab: u32, bytes: Vec<u8> },
     NewWindow { tab: u32, uri: String, user_initiated: bool },
     Permission { tab: u32, kind: String, uri: String, args: ICoreWebView2PermissionRequestedEventArgs, deferral: ICoreWebView2Deferral },
@@ -326,7 +328,8 @@ impl App {
             "dark" => ThemeMode::Dark,
             _ => ThemeMode::System,
         };
-        let accent = parse_accent(&storage.get_setting("accent", "110,91,208"));
+        let (dr, dg, db) = crate::theme::ACCENT_DEFAULT;
+        let accent = parse_accent(&storage.get_setting("accent", &format!("{dr},{dg},{db}")));
         let reduce_motion = storage.get_setting("reduce_motion", "0") == "1";
         let theme = Theme::new(theme_mode, accent, reduce_motion);
 
@@ -379,11 +382,7 @@ impl App {
 
         register_classes(hinst)?;
 
-        let (tfg, tbg) = if theme.dark {
-            (COLORREF(0x00F8F0F0), COLORREF(0x00241E1E))
-        } else {
-            (COLORREF(0x00261C1C), COLORREF(0x00FCFAFA))
-        };
+        let (tfg, tbg) = edit_colors(&theme);
         let edit_brush = unsafe { CreateSolidBrush(tbg) };
         let hfont = unsafe {
             CreateFontW(
@@ -779,6 +778,24 @@ impl App {
                 WM_MOUSELEAVE => {
                     self.set_hot(Hot::None);
                     self.hide_tooltip();
+                    return LRESULT(0);
+                }
+                WM_ACTIVATEAPP => {
+                    // Wechselt der Nutzer zu einer anderen Anwendung, müssen
+                    // Vorschläge und Menüs weg — sonst stehen sie über deren
+                    // Fenster und man sieht sie überall.
+                    if w.0 == 0 {
+                        if let Some(p) = self.sugg_popup.take() {
+                            p.close();
+                        }
+                        if let Some(p) = self.menu_popup.take() {
+                            p.close();
+                        }
+                        self.hide_tooltip();
+                        if self.editing {
+                            self.end_edit(false);
+                        }
+                    }
                     return LRESULT(0);
                 }
                 WM_LBUTTONDOWN => {
@@ -1287,6 +1304,21 @@ impl App {
                 }
             }
 
+            // Solange die Ansicht des aktiven Tabs noch nicht steht, klafft im
+            // Inhaltsbereich ein durchsichtiges Loch — auf dem Bildschirm ein
+            // schwarzes Rechteck. Bis der Tab seine eigene Fläche mitbringt,
+            // legen wir die Farbe des Fensters darunter.
+            let waiting = self
+                .tabs
+                .get(self.active)
+                .map(|t| !t.painted)
+                .unwrap_or(true);
+            if overlay && waiting {
+                if let Ok(b) = brush(rt, theme.bg) {
+                    rt.FillRectangle(&rect_f(content_x, TOPBAR_H, w - content_x, h - TOPBAR_H), &b);
+                }
+            }
+
             // ---- separators ----
             if let Ok(b) = brush(rt, theme.border) {
                 rt.FillRectangle(&rect_f(sw - 1.0, 0.0, 1.0, h), &b);
@@ -1432,7 +1464,10 @@ impl App {
         let rad = R_MD;
         let ht = self.hover_t(Hot::Omnibox);
         unsafe {
-            if let Ok(b) = brush(rt, theme.input_bg) {
+            // Beim Tippen die deckende Fläche, damit sie sich nahtlos an das
+            // Kindfenster im Loch anschließt.
+            let fill = if self.editing { theme.input_solid } else { theme.input_bg };
+            if let Ok(b) = brush(rt, fill) {
                 rt.FillRoundedRectangle(&rounded(r, rad), &b);
             }
             if ht > 0.0 && !self.editing {
@@ -1475,6 +1510,22 @@ impl App {
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
+            }
+
+            // Beim Tippen zeigt das Eingabefeld den Text — ein echtes
+            // Kindfenster. Auf der Kompositionsfläche liegt unsere Ebene aber
+            // über allen Kindfenstern, das Feld wäre also übermalt und die
+            // Adresse unsichtbar. Also dort ein Loch lassen, genau wie im
+            // Inhaltsbereich für die Seite.
+            // Das Loch liegt eine Bildpunktbreite *innerhalb* des Eingabefeldes
+            // (siehe MoveWindow in relayout: +38/+7, Breite −80, Höhe 24) —
+            // sonst bliebe an der Kante ein durchsichtiger Streifen stehen,
+            // durch den man den Schreibtisch sähe.
+            if self.editing && self.comp.is_some() {
+                let hole = rect_f(r.left + 39.0, r.top + 8.0, (r.right - r.left) - 82.0, 22.0);
+                rt.PushAxisAlignedClip(&hole, D2D1_ANTIALIAS_MODE_ALIASED);
+                rt.Clear(None);
+                rt.PopAxisAlignedClip();
             }
 
             // URL text (only when not editing; edit control shows text otherwise)
@@ -3055,6 +3106,16 @@ impl App {
                     }
                 }
             }
+            AppMsg::TabPainted { tab } => {
+                if let Some(i) = self.tab_index_by_id(tab) {
+                    if !self.tabs[i].painted {
+                        self.tabs[i].painted = true;
+                        if i == self.active {
+                            self.paint();
+                        }
+                    }
+                }
+            }
             AppMsg::NavCompleted { tab, url, title, can_back, can_fwd } => {
                 if let Some(i) = self.tab_index_by_id(tab) {
                     let display = tabs::display_url(&url);
@@ -3062,6 +3123,9 @@ impl App {
                     t.url = display.clone();
                     t.is_internal = display.starts_with("aura://");
                     t.loading = false;
+                    // Spätestens jetzt steht die Seite — auch wenn ContentLoading
+                    // ausblieb, etwa bei einem Abbruch.
+                    t.painted = true;
                     t.can_back = can_back;
                     t.can_fwd = can_fwd;
                     if !title.is_empty() {
@@ -3216,6 +3280,48 @@ impl App {
         }
     }
 
+    /// Gibt einer frisch erzeugten Ansicht die Farben des Browsers mit.
+    ///
+    /// Zwei Dinge, die man einzeln kaum bemerkt und zusammen sehr:
+    ///
+    /// * Der Untergrund, den WebView2 zeigt, solange die Seite noch nichts
+    ///   gezeichnet hat, ist ab Werk weiß. In einem dunklen Fenster blitzt
+    ///   bei jedem Seitenaufbau ein weißes Rechteck auf.
+    /// * Ohne gesetztes Farbschema meldet Chromium den Seiten „hell“. Seiten
+    ///   mit Nachtdarstellung öffnen dann hell in einem dunklen Browser.
+    fn dress_webview(&self, controller: &ICoreWebView2Controller, webview: &ICoreWebView2) {
+        unsafe {
+            if let Ok(c2) = controller.cast::<ICoreWebView2Controller2>() {
+                let bg = self.theme.bg;
+                let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                // Die Schnittstelle nimmt nur deckend oder ganz durchsichtig.
+                let _ = c2.SetDefaultBackgroundColor(COREWEBVIEW2_COLOR {
+                    A: 255,
+                    R: to8(bg.r),
+                    G: to8(bg.g),
+                    B: to8(bg.b),
+                });
+            }
+            if let Ok(p) = webview.cast::<ICoreWebView2_13>().and_then(|w| w.Profile()) {
+                let scheme = match self.theme_mode {
+                    ThemeMode::System => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_AUTO,
+                    ThemeMode::Dark => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_DARK,
+                    ThemeMode::Light => COREWEBVIEW2_PREFERRED_COLOR_SCHEME_LIGHT,
+                };
+                let _ = p.SetPreferredColorScheme(scheme);
+            }
+        }
+    }
+
+    /// Reicht ein neues Thema an alle offenen Ansichten weiter.
+    fn redress_webviews(&self) {
+        for tab in &self.tabs {
+            if let (Some(c), Some(w)) = (&tab.controller, &tab.webview) {
+                self.dress_webview(c, w);
+            }
+        }
+    }
+
     fn on_controller_ready(&mut self, tab_id: u32, controller: ICoreWebView2Controller) {
         let Some(i) = self.tab_index_by_id(tab_id) else { return };
         let Ok(webview) = (unsafe { controller.CoreWebView2() }) else { return };
@@ -3232,6 +3338,10 @@ impl App {
                 );
             }
         }
+
+        // Untergrund und Farbschema setzen, bevor irgendetwas zu sehen ist —
+        // sonst blitzt beim Öffnen einer Seite kurz Weiß auf.
+        self.dress_webview(&controller, &webview);
 
         let Some(env) = self.env.clone() else { return };
         let guards = tabs::attach_events(tab_id, &webview, &controller, &env);
@@ -4334,15 +4444,12 @@ impl App {
                 4,
             );
             let _ = DeleteObject(HGDIOBJ(self.edit_brush.0));
-            let (fg, bg) = if self.theme.dark {
-                (COLORREF(0x00F8F0F0), COLORREF(0x00241E1E))
-            } else {
-                (COLORREF(0x00261C1C), COLORREF(0x00FCFAFA))
-            };
+            let (fg, bg) = edit_colors(&self.theme);
             self.edit_fg = fg;
             self.edit_bg = bg;
             self.edit_brush = CreateSolidBrush(bg);
         }
+        self.redress_webviews();
         self.paint();
     }
 
@@ -4360,6 +4467,20 @@ impl App {
             let _ = std::fs::remove_dir_all(dir);
         }
     }
+}
+
+/// Farben des Adressfeldes, aus demselben Farbsatz wie alles andere.
+///
+/// Das Feld ist ein echtes Kindfenster und liegt im Loch, das die Oberfläche
+/// beim Tippen frei lässt. Seine Fläche muss deshalb genau die des Feldes
+/// treffen (Stufe 3), sonst sieht man das Loch als Kasten.
+fn edit_colors(theme: &Theme) -> (COLORREF, COLORREF) {
+    let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    // COLORREF liegt als 0x00BBGGRR vor.
+    let pack = |c: windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F| {
+        COLORREF(to8(c.r) | (to8(c.g) << 8) | (to8(c.b) << 16))
+    };
+    (pack(theme.text), pack(theme.input_solid))
 }
 
 // ---------------- helpers ----------------

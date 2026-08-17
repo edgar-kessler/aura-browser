@@ -40,6 +40,11 @@ pub struct Tab {
     /// close; a tab is only really dropped once it reaches 0.
     pub appear: f32,
     pub closing: bool,
+    /// Hat die Ansicht schon einmal etwas gezeichnet? Vorher zeigt das
+    /// Kindfenster nichts, und durch den durchsichtigen Inhaltsbereich sähe
+    /// man ein schwarzes Rechteck. Bis dahin legt das Fenster seine eigene
+    /// Farbe darunter.
+    pub painted: bool,
 }
 
 impl Tab {
@@ -72,6 +77,7 @@ impl Tab {
             spawning: false,
             appear: 0.0,
             closing: false,
+            painted: false,
         }
     }
 
@@ -339,6 +345,8 @@ pub fn attach_events(
 
     // --- Aura Shield: hide the empty frames the blocked requests leave behind ---
     let h = ContentLoadingEventHandler::create(Box::new(move |wv, _| {
+        // Ab hier zeichnet die Ansicht selbst — der Platzhalter darf weg.
+        post(AppMsg::TabPainted { tab: tab_id });
         if let Some(wv) = wv {
             let url = get_str(|p| unsafe { wv.Source(p) });
             let host = crate::adblock::host_of_url(&url).to_string();
