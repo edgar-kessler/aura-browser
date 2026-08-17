@@ -97,6 +97,20 @@ impl Gfx {
         }
     }
 
+    /// Breite eines Textes in DIP mit diesem Format, höchstens `max`.
+    pub fn text_width(&self, fmt: &IDWriteTextFormat, text: &str, max: f32) -> f32 {
+        let utf: Vec<u16> = text.encode_utf16().collect();
+        unsafe {
+            if let Ok(l) = self.dwrite.CreateTextLayout(&utf, fmt, max.max(1.0), 100.0) {
+                let mut m = DWRITE_TEXT_METRICS::default();
+                if l.GetMetrics(&mut m).is_ok() {
+                    return m.width.min(max);
+                }
+            }
+        }
+        0.0
+    }
+
     /// Decode PNG/JPEG/ICO bytes into a D2D bitmap via WIC.
     pub fn bitmap_from_bytes(
         &self,
@@ -152,23 +166,50 @@ pub struct CompDevice {
 /// A DirectComposition-backed surface: a per-pixel-alpha swap chain hung off a
 /// composition visual. This is what lets Mica/Acrylic shine through the chrome.
 ///
-/// Der Baum hängt *unter* den Kindfenstern (`CreateTargetForHwnd(…, false)`):
-/// die Seite (ein WebView2-Kindfenster) liegt also über unserer Fläche. So darf
-/// die Oberfläche das ganze Fenster deckend grundieren — wo die Seite ist,
-/// verdeckt sie das; wo sie (noch) fehlt, weil ein Tab gerade wechselt oder
-/// das Fenster wächst, sieht man unsere Farbe statt des Schreibtischs.
+/// Zwei Bäume am selben Fenster:
+///
+/// * **Grundplatte** (`CreateTargetForHwnd(…, false)`, hinter den Kindfenstern):
+///   eine winzige, einfarbige Fläche, riesig skaliert. Wo weder Oberfläche noch
+///   Seite etwas malen — Tab wechselt gerade, Fenster wächst schneller als die
+///   Seite nachkommt, Ansicht startet noch — sieht man diese Farbe und nicht den
+///   Schreibtisch.
+/// * **Oberfläche** (`CreateTargetForHwnd(…, true)`, über den Kindfenstern): die
+///   Kette mit der Leiste, der Kopfzeile, den Knöpfen. Der Inhaltsbereich bleibt
+///   darin durchsichtig, damit die Seite durchkommt. Weil sie *über* der Seite
+///   liegt, darf die Leiste beim Ziehen über die noch nicht nachgezogene Seite
+///   malen.
+///
+/// Die Kette ist größer als das Fenster (Überschuss bis zur Monitorgröße): beim
+/// Ziehen am Rand muss sie nicht umgebaut werden, und der Streifen, den das
+/// Fenster gerade freilegt, ist schon bemalt — bevor der Fensterverwalter
+/// unser nächstes Bild hat. Ohne das schien dort für ein Bild der Schreibtisch
+/// durch: „beim Resizen wird der Hintergrund durchsichtig“.
 pub struct Composition {
     pub dc: ID2D1DeviceContext,
     swap: IDXGISwapChain1,
     comp: IDCompositionDevice,
     _target: IDCompositionTarget,
     _visual: IDCompositionVisual,
+    plate: Option<Backplate>,
+    /// Größe der Kette (Bildpunkte) — mindestens das Fenster, meist der Monitor.
     size: (u32, u32),
     dpi: f32,
     /// Das Gerät ist verloren gegangen (Treiber-Reset, Aufwachen, Monitor
     /// umgesteckt). Ab jetzt hilft nur ein Neuaufbau von Gerät und Fläche.
     pub lost: bool,
 }
+
+/// Die einfarbige Grundplatte hinter allem (siehe [`Composition`]).
+struct Backplate {
+    _target: IDCompositionTarget,
+    _visual: IDCompositionVisual,
+    surface: IDCompositionSurface,
+    color: D2D1_COLOR_F,
+}
+
+/// Seitenlänge der Grundplattenfläche. Sie wird auf 32768 Bildpunkte gestreckt.
+const PLATE_PX: u32 = 4;
+const PLATE_SCALE: f32 = 32768.0 / PLATE_PX as f32;
 
 /// Ergebnis eines Bildes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -216,7 +257,9 @@ impl Gfx {
         }
     }
 
-    /// Attaches a composition swap chain to the window.
+    /// Attaches a composition swap chain to the window. `width`/`height` is
+    /// the size the chain is allocated at — the caller passes the monitor size,
+    /// so later window growth needs no reallocation (see [`Composition`]).
     pub fn create_composition(
         &self,
         dev: &CompDevice,
@@ -247,11 +290,30 @@ impl Gfx {
                 .CreateSwapChainForComposition(&dev.d3d, &desc, None)
                 .ok()?;
             let comp: IDCompositionDevice = DCompositionCreateDevice(&dev.dxgi).ok()?;
-            // `false`: unser Baum liegt hinter den Kindfenstern, siehe oben.
-            let target = comp.CreateTargetForHwnd(hwnd, false).ok()?;
+            // Oberfläche über den Kindfenstern.
+            let target = comp.CreateTargetForHwnd(hwnd, true).ok()?;
             let visual = comp.CreateVisual().ok()?;
             visual.SetContent(&swap).ok()?;
             target.SetRoot(&visual).ok()?;
+
+            // Grundplatte dahinter. Geht sie nicht (älteres Windows), malt die
+            // Oberfläche den Inhaltsbereich selbst deckend.
+            let plate = (|| -> Option<Backplate> {
+                let target = comp.CreateTargetForHwnd(hwnd, false).ok()?;
+                let visual = comp.CreateVisual().ok()?;
+                let surface = comp
+                    .CreateSurface(PLATE_PX, PLATE_PX, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ALPHA_MODE_PREMULTIPLIED)
+                    .ok()?;
+                visual.SetContent(&surface).ok()?;
+                let m = windows_numerics::Matrix3x2 {
+                    M11: PLATE_SCALE, M12: 0.0, M21: 0.0, M22: PLATE_SCALE, M31: 0.0, M32: 0.0,
+                };
+                visual.SetTransform2(&m).ok()?;
+                let _ = visual.SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+                let _ = visual.SetBorderMode(DCOMPOSITION_BORDER_MODE_HARD);
+                target.SetRoot(&visual).ok()?;
+                Some(Backplate { _target: target, _visual: visual, surface, color: color(0, 0, 0, 0.0) })
+            })();
             comp.Commit().ok()?;
             Some(Composition {
                 dc: dev.context.clone(),
@@ -259,6 +321,7 @@ impl Gfx {
                 comp,
                 _target: target,
                 _visual: visual,
+                plate,
                 size: (width.max(1), height.max(1)),
                 dpi: 96.0 * scale,
                 lost: false,
@@ -268,23 +331,80 @@ impl Gfx {
 }
 
 impl Composition {
-    pub fn resize(&mut self, width: u32, height: u32, scale: f32) {
+    /// Sorgt dafür, dass die Kette mindestens `width`×`height` misst. Reicht
+    /// sie, passiert nichts — das ist beim Ziehen am Rand der Normalfall, weil
+    /// sie von vornherein Monitorgröße hat. Muss sie wachsen (größerer
+    /// Monitor), dann gleich auf `hint` (Monitorgröße), nicht nur knapp.
+    pub fn resize(&mut self, width: u32, height: u32, hint: (u32, u32), scale: f32) {
         let (w, h) = (width.max(1), height.max(1));
         self.dpi = 96.0 * scale;
-        if self.size == (w, h) {
+        if w <= self.size.0 && h <= self.size.1 {
             return;
         }
+        let (nw, nh) = (w.max(hint.0).max(self.size.0), h.max(hint.1).max(self.size.1));
         unsafe {
             self.dc.SetTarget(None);
             match self
                 .swap
-                .ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))
+                .ResizeBuffers(0, nw, nh, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))
             {
-                Ok(()) => self.size = (w, h),
+                Ok(()) => self.size = (nw, nh),
                 Err(e) if is_device_lost(e.code()) => self.lost = true,
                 Err(_) => {}
             }
         }
+    }
+
+    /// Größe der Kette in DIP — so weit reicht die Malfläche.
+    pub fn canvas_dip(&self) -> (f32, f32) {
+        let s = self.dpi / 96.0;
+        (self.size.0 as f32 / s, self.size.1 as f32 / s)
+    }
+
+    /// Gibt es die Grundplatte? Sonst muss die Oberfläche selbst grundieren.
+    pub fn has_plate(&self) -> bool {
+        self.plate.is_some()
+    }
+
+    /// Färbt die Grundplatte. Nur außerhalb von `begin`/`end` aufrufen.
+    pub fn set_plate_color(&mut self, c: D2D1_COLOR_F) {
+        let Some(plate) = self.plate.as_mut() else { return };
+        let same = |a: f32, b: f32| (a - b).abs() < 0.002;
+        if same(plate.color.r, c.r) && same(plate.color.g, c.g) && same(plate.color.b, c.b) && same(plate.color.a, c.a) {
+            return;
+        }
+        unsafe {
+            let mut offset = windows::Win32::Foundation::POINT::default();
+            let Ok(surface) = plate.surface.BeginDraw::<IDXGISurface>(None, &mut offset) else { return };
+            let props = D2D1_BITMAP_PROPERTIES1 {
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 96.0,
+                dpiY: 96.0,
+                bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                colorContext: std::mem::ManuallyDrop::new(None),
+            };
+            if let Ok(bitmap) = self.dc.CreateBitmapFromDxgiSurface(&surface, Some(&props)) {
+                self.dc.SetTarget(&bitmap);
+                self.dc.SetDpi(96.0, 96.0);
+                self.dc.BeginDraw();
+                // Die Fläche kann Teil eines Atlas sein — nur unser Stück
+                // an `offset` färben, nichts daneben.
+                self.dc.PushAxisAlignedClip(
+                    &rect_f(offset.x as f32, offset.y as f32, PLATE_PX as f32, PLATE_PX as f32),
+                    D2D1_ANTIALIAS_MODE_ALIASED,
+                );
+                self.dc.Clear(Some(&c));
+                self.dc.PopAxisAlignedClip();
+                let _ = self.dc.EndDraw(None, None);
+                self.dc.SetTarget(None);
+            }
+            let _ = plate.surface.EndDraw();
+            let _ = self.comp.Commit();
+        }
+        plate.color = c;
     }
 
     /// Binds the back buffer and opens a draw batch.
@@ -365,10 +485,11 @@ impl Composition {
         self.dc.cast().unwrap()
     }
 
-    /// Liest den aktuellen Rückpuffer als BGRA-Pixel aus. Muss zwischen
+    /// Liest den aktuellen Rückpuffer als BGRA-Pixel aus, beschnitten auf
+    /// `cw`×`ch` (das Fenster — die Kette selbst ist größer). Muss zwischen
     /// `begin()` und `end()` laufen – nach dem Present ist der Puffer beim
     /// Flip-Modell nicht mehr definiert.
-    pub fn read_back(&self) -> Option<(u32, u32, Vec<u8>)> {
+    pub fn read_back(&self, cw: u32, ch: u32) -> Option<(u32, u32, Vec<u8>)> {
         unsafe {
             let back: ID3D11Texture2D = self.swap.GetBuffer(0).ok()?;
             let mut desc = D3D11_TEXTURE2D_DESC::default();
@@ -388,7 +509,7 @@ impl Composition {
 
             let mut map = D3D11_MAPPED_SUBRESOURCE::default();
             ctx.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut map)).ok()?;
-            let (w, h) = (desc.Width, desc.Height);
+            let (w, h) = (cw.min(desc.Width).max(1), ch.min(desc.Height).max(1));
             let mut out = vec![0u8; (w * h * 4) as usize];
             for y in 0..h as usize {
                 let src = (map.pData as *const u8).add(y * map.RowPitch as usize);

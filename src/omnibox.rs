@@ -248,7 +248,7 @@ pub fn build_suggestions(app: &App, query: &str) -> Vec<Suggestion> {
 
 pub fn navigate_suggestions(app: &mut App, delta: i32) {
     if let Some(p) = &mut app.sugg_popup {
-        if let PopupKind::Suggestions { items, selected } = &mut p.kind {
+        if let PopupKind::Suggestions { items, selected, .. } = &mut p.kind {
             let n = items.len() as i32;
             if n == 0 {
                 return;

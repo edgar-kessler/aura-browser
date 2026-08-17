@@ -155,6 +155,7 @@ pub fn send_init(app: &App, tab_id: u32) {
                 "glass_possible": app.glass_possible(),
                 "effects": app.effects_on(),
                 "sidebar_width": s.get_setting("sidebar_width", ""),
+                "bookmarks_bar": s.get_setting("bookmarks_bar", "1"),
             })
         }
         "reading" => {
@@ -450,6 +451,7 @@ pub fn handle_message(app: &mut App, tab_id: u32, json_str: &str) {
                     app.set_glass(wanted, &style);
                 }
                 "sidebar_hover" => app.set_sidebar_hover(value == "1"),
+                "bookmarks_bar" => app.set_bookmarks_bar(value == "1"),
                 "default_zoom" => {
                     if let Ok(z) = value.parse::<f64>() {
                         app.zoom_to(z.clamp(50.0, 250.0) / 100.0);
@@ -473,6 +475,7 @@ pub fn handle_message(app: &mut App, tab_id: u32, json_str: &str) {
         "remove_bookmark" => {
             if let Some(id) = v.get("id").and_then(|i| i.as_i64()) {
                 app.storage.remove_bookmark(id);
+                app.bookmarks_changed();
                 refresh_page(app, "bookmarks");
             }
         }
@@ -480,6 +483,7 @@ pub fn handle_message(app: &mut App, tab_id: u32, json_str: &str) {
             if let Some(title) = v.get("title").and_then(|t| t.as_str()) {
                 if !title.trim().is_empty() {
                     app.storage.add_bookmark_folder(title.trim(), 0);
+                    app.bookmarks_changed();
                     refresh_page(app, "bookmarks");
                 }
             }
@@ -591,6 +595,7 @@ pub fn handle_message(app: &mut App, tab_id: u32, json_str: &str) {
             let profile = v.get("profile").and_then(|p| p.as_str()).unwrap_or("Default");
             let result = chrome_import(app, bookmarks, history, passwords, csv, profile);
             send_to_page(app, tab_id, &json!({"type": "import_result", "text": result}));
+            app.bookmarks_changed();
             refresh_page(app, "bookmarks");
             refresh_page(app, "history");
             refresh_page(app, "start");
@@ -634,6 +639,12 @@ fn refresh_page(app: &App, page: &str) {
     for id in ids {
         send_init(app, id);
     }
+}
+
+/// Lesezeichen haben sich außerhalb der Seite geändert (Stern, Leiste).
+pub fn refresh_bookmark_pages(app: &App) {
+    refresh_page(app, "bookmarks");
+    refresh_page(app, "start");
 }
 
 fn refresh_settings_pages(app: &App) {

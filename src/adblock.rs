@@ -960,8 +960,24 @@ pub fn note_popup_abuse(host: &str) -> bool {
     with_engine(|e| e.popup_abusers.insert(site))
 }
 
+/// Seiten und Videohoster, die erfahrungsgemäß bei jedem Klick ein Fenster
+/// werfen — dort gilt die strenge Fensterregel von Anfang an, nicht erst nach
+/// der zweiten Flut. Dieselbe Liste kennt shield.js für die Player-Rahmen.
+const DEFAULT_POPUP_ABUSERS: &[&str] = &[
+    "aniworld.to", "serienstream.to", "s.to", "bs.to", "burning-series.io",
+    "kinox.to", "kinoger.to", "streamkiste.tv", "movie4k.to", "hdfilme.my",
+    "voe.sx", "vidoza.net", "streamtape.com", "doodstream.com", "dood.to", "dood.la",
+    "dood.so", "dood.ws", "dood.pm", "ds2play.com", "filemoon.sx", "mixdrop.co",
+    "mixdrop.to", "vidmoly.to", "vidmoly.me", "streamwish.to", "filelions.to",
+    "luluvdo.com", "upstream.to", "mp4upload.com", "vidhide.com", "vtube.to",
+    "streamvid.net", "speedfiles.net", "vidguard.to", "vembed.net",
+];
+
 pub fn is_popup_abuser(host: &str) -> bool {
     let h = host.to_ascii_lowercase();
+    if DEFAULT_POPUP_ABUSERS.iter().any(|d| host_matches(&h, d)) {
+        return true;
+    }
     with_engine(|e| e.popup_abusers.iter().any(|d| host_matches(&h, d)))
 }
 

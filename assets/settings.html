@@ -138,6 +138,8 @@ section .card,.shield-hero{animation:rise .22s var(--ease) both}
             <input type="color" id="accent_custom" value="#0072f5">
             <input type="text" id="accent_hex" placeholder="#0072f5">
           </div></div>
+        <div class="row"><div class="lbl"><b>Lesezeichenleiste</b><small>Unter der Werkzeugzeile: Lesezeichen der obersten Ebene als Chips</small></div>
+          <div class="ctl"><div class="sw" id="bookmarks_bar"></div></div></div>
         <div class="row"><div class="lbl"><b>Tab-Leiste</b><small>Seitlich wie Arc – oder oben wie Chrome</small></div>
           <div class="ctl"><select id="tab_layout">
             <option value="side">Seitlich</option>
@@ -344,7 +346,7 @@ function bindToggle(id) {
 }
 ['#reduce_motion', '#restore_session', '#sleep_tabs', '#block_popups', '#shield', '#shield_update',
  '#suggestions', '#close_last_tab', '#sidebar_hover', '#dnt', '#https_only', '#popup_strict',
- '#glass', '#auto_update'].forEach(bindToggle);
+ '#glass', '#auto_update', '#bookmarks_bar'].forEach(bindToggle);
 $('#clear_all_data').addEventListener('click', e => { e.target.textContent = 'Gelöscht'; post({cmd: 'clear_all_data'}); });
 $('#upd_check').addEventListener('click', e => { e.target.textContent = 'Suche …'; post({cmd: 'update_check'}); });
 $('#open_repo').addEventListener('click', () => post({cmd: 'open_new', url: `https://github.com/${REPO}`}));
@@ -484,7 +486,7 @@ window.chrome?.webview?.addEventListener('message', ev => {
    ['#block_popups', d.block_popups], ['#shield', d.shield], ['#shield_update', d.shield_update],
    ['#suggestions', d.suggestions], ['#close_last_tab', d.close_last_tab],
    ['#sidebar_hover', d.sidebar_hover], ['#dnt', d.dnt], ['#https_only', d.https_only],
-   ['#popup_strict', d.popup_strict], ['#glass', d.glass]]
+   ['#popup_strict', d.popup_strict], ['#glass', d.glass], ['#bookmarks_bar', d.bookmarks_bar ?? '1']]
     .forEach(([id, v]) => $(id).classList.toggle('on', v === '1'));
   $('#glass_style').value = d.glass_style || 'acrylic';
   GLASS = {possible: d.glass_possible !== false, effects: d.effects !== false, active: !!d.glass_active};

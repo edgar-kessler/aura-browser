@@ -6,6 +6,8 @@ use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::app::{post, App, AppMsg, APP_PTR};
@@ -53,7 +55,9 @@ impl MenuItem {
 pub enum PopupKind {
     Tooltip { title: String, sub: String },
     Menu { items: Vec<MenuItem>, hover: i32 },
-    Suggestions { items: Vec<Suggestion>, selected: usize },
+    /// `selected` ist die Tastaturauswahl (Enter öffnet sie), `hover` die
+    /// Zeile unter dem Zeiger — getrennt, wie in Chrome.
+    Suggestions { items: Vec<Suggestion>, selected: usize, hover: i32 },
     Permission { kind: String, origin: String, hover: i32, remember: bool },
 }
 
@@ -157,6 +161,41 @@ fn text_width(gfx: &Gfx, fmt: &IDWriteTextFormat, text: &str, max: f32) -> f32 {
     0.0
 }
 
+/// Speicher-DC mit 32-Bit-DIB (Alphakanal) in der gegebenen Größe.
+fn make_dib(w: i32, h: i32) -> Option<(HDC, HBITMAP)> {
+    let memdc = unsafe { CreateCompatibleDC(None) };
+    let bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w.max(1),
+            biHeight: -h.max(1),
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            biSizeImage: 0,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        },
+        bmiColors: [RGBQUAD::default()],
+    };
+    let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+    let dib = unsafe {
+        match CreateDIBSection(Some(memdc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
+            Ok(d) => d,
+            Err(_) => {
+                let _ = DeleteDC(memdc);
+                return None;
+            }
+        }
+    };
+    unsafe {
+        SelectObject(memdc, HGDIOBJ(dib.0));
+    }
+    Some((memdc, dib))
+}
+
 fn create(app: &App, kind: PopupKind, x: i32, y: i32, activate: bool) -> Option<Box<Popup>> {
     let scale = app.scale;
     let (w_dip, h_dip) = measure(app, &kind);
@@ -212,38 +251,7 @@ fn create(app: &App, kind: PopupKind, x: i32, y: i32, activate: bool) -> Option<
     };
 
     // DIB section for per-pixel alpha.
-    let memdc = unsafe { CreateCompatibleDC(None) };
-    let bmi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: w,
-            biHeight: -h,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            biSizeImage: 0,
-            biXPelsPerMeter: 0,
-            biYPelsPerMeter: 0,
-            biClrUsed: 0,
-            biClrImportant: 0,
-        },
-        bmiColors: [RGBQUAD::default()],
-    };
-    let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-    let dib = unsafe {
-        CreateDIBSection(
-            Some(memdc),
-            &bmi,
-            DIB_RGB_COLORS,
-            &mut bits,
-            None,
-            0,
-        )
-        .ok()?
-    };
-    unsafe {
-        SelectObject(memdc, HGDIOBJ(dib.0));
-    }
+    let (memdc, dib) = make_dib(w, h)?;
 
     let props = D2D1_RENDER_TARGET_PROPERTIES {
         r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -298,6 +306,38 @@ impl Popup {
             let _ = DeleteDC(self.memdc);
             let _ = DeleteObject(HGDIOBJ(self.dib.0));
         }
+    }
+
+    /// Tauscht den Inhalt aus, ohne das Fenster zu schließen — für die
+    /// Vorschläge, die sich mit jedem Zeichen ändern. Vorher wurde das
+    /// Fenster bei jedem Tastendruck zerstört und samt Einblenden neu
+    /// erzeugt: die Liste poppte bei jedem Buchstaben von vorn auf. Jetzt
+    /// bleibt sie stehen; ändert sich die Höhe, wächst oder schrumpft das
+    /// Fenster an Ort und Stelle.
+    pub fn update(&mut self, app: &App, kind: PopupKind) {
+        let (w_dip, h_dip) = measure(app, &kind);
+        let w = (w_dip * self.scale).ceil() as i32;
+        let h = (h_dip * self.scale).ceil() as i32;
+        if (w, h) != (self.w, self.h) {
+            if let Some((memdc, dib)) = make_dib(w, h) {
+                unsafe {
+                    let _ = DeleteDC(self.memdc);
+                    let _ = DeleteObject(HGDIOBJ(self.dib.0));
+                }
+                self.memdc = memdc;
+                self.dib = dib;
+                self.w = w;
+                self.h = h;
+                unsafe {
+                    let _ = SetWindowPos(
+                        self.hwnd, None, 0, 0, w, h,
+                        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
+            }
+        }
+        self.kind = kind;
+        self.repaint();
     }
 
     pub fn repaint(&mut self) {
@@ -398,16 +438,18 @@ impl Popup {
                         y += MENU_ROW;
                     }
                 }
-                PopupKind::Suggestions { items, selected } => {
+                PopupKind::Suggestions { items, selected, hover } => {
                     let mut y = body.top + 6.0;
                     for (i, s) in items.iter().enumerate() {
                         let row = rect_f(body.left + 6.0, y, body.right - body.left - 12.0, SUGG_ROW);
-                        if i == *selected {
-                            // Gewählte Zeile: ruhige Fläche plus Akzentbalken,
-                            // statt einer eingefärbten Wanne.
+                        if i == *selected || *hover == i as i32 {
+                            // Gewählte oder berührte Zeile: ruhige Fläche; nur
+                            // die gewählte trägt den Akzentbalken.
                             if let Ok(b) = brush(&rt, theme.hover) {
                                 rt.FillRoundedRectangle(&rounded(row, R_MD), &b);
                             }
+                        }
+                        if i == *selected {
                             if let Ok(b) = brush(&rt, theme.accent_f) {
                                 rt.FillRoundedRectangle(
                                     &rounded(rect_f(row.left + 3.0, row.top + 10.0, 3.0, SUGG_ROW - 20.0), 1.5),
@@ -602,12 +644,15 @@ pub fn show_suggestions(app: &mut App, items: Vec<Suggestion>) {
     unsafe {
         let _ = ClientToScreen(app.hwnd, &mut pt);
     }
-    let replace = app.sugg_popup.is_some();
-    if let Some(p) = app.sugg_popup.take() {
-        p.close();
+    let kind = PopupKind::Suggestions { items, selected: 0, hover: -1 };
+    // Steht die Liste schon, wird sie an Ort und Stelle ausgetauscht — kein
+    // Schließen, kein erneutes Einblenden bei jedem Zeichen.
+    if let Some(mut p) = app.sugg_popup.take() {
+        p.update(app, kind);
+        app.sugg_popup = Some(p);
+        return;
     }
-    let _ = replace;
-    app.sugg_popup = create(app, PopupKind::Suggestions { items, selected: 0 }, pt.x, pt.y, false);
+    app.sugg_popup = create(app, kind, pt.x, pt.y, false);
 }
 
 pub fn show_permission(app: &mut App, kind: &str, origin: &str) {
@@ -669,11 +714,19 @@ unsafe extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPAR
                 let y = y_lparam(l) as f32 / popup.scale;
                 let row = popup.row_at(y);
                 match &mut popup.kind {
-                    PopupKind::Menu { hover, .. } => {
+                    PopupKind::Menu { hover, .. } | PopupKind::Suggestions { hover, .. } => {
                         if row != *hover {
                             *hover = row;
                             popup.repaint();
                         }
+                        // Verlassen melden lassen, damit die Zeile wieder ausgeht.
+                        let mut tme = TRACKMOUSEEVENT {
+                            cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                            dwFlags: TME_LEAVE,
+                            hwndTrack: hwnd,
+                            dwHoverTime: 0,
+                        };
+                        let _ = TrackMouseEvent(&mut tme);
                     }
                     PopupKind::Permission { hover, .. } => {
                         let app_ptr = APP_PTR.with(|p| p.get());
@@ -772,6 +825,18 @@ unsafe extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPAR
                     PopupKind::Permission { .. } => {
                         if w.0 as u32 == 0x1B {
                             post(AppMsg::PermissionAnswer { allow: false, remember: false });
+                        }
+                    }
+                    _ => {}
+                }
+                LRESULT(0)
+            }
+            WM_MOUSELEAVE => {
+                match &mut popup.kind {
+                    PopupKind::Menu { hover, .. } | PopupKind::Suggestions { hover, .. } => {
+                        if *hover != -1 {
+                            *hover = -1;
+                            popup.repaint();
                         }
                     }
                     _ => {}
