@@ -148,6 +148,7 @@ pub fn send_init(app: &App, tab_id: u32) {
                     "size": r.size, "name": r.asset_name,
                 })),
                 "glass": s.get_setting("glass", "1"),
+                "tab_layout": s.get_setting("tab_layout", "side"),
                 "glass_style": s.get_setting("glass_style", "acrylic"),
                 "transparency": if crate::theme::system_transparency() { "1" } else { "0" },
             })
@@ -165,13 +166,51 @@ pub fn send_init(app: &App, tab_id: u32) {
             json!({"items": items})
         }
         "passwords" => {
-            let items: Vec<Value> = app
-                .storage
-                .password_list()
+            // Sicherheitsüberblick, ohne ein einziges Passwort an die Seite zu
+            // geben: entschlüsselt wird nur hier im Prozess, die Seite bekommt
+            // je Eintrag eine Stärke (0 schwach, 1 mittel, 2 stark) und ob das
+            // Passwort mehrfach verwendet wird.
+            let list = app.storage.password_list();
+            let mut plains: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+            let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+            for (id, _, _) in &list {
+                if let Some(p) = app.storage.password_blob(*id).and_then(|b| dpapi_unprotect(&b)) {
+                    *seen.entry(p.clone()).or_insert(0) += 1;
+                    plains.insert(*id, p);
+                }
+            }
+            let strength = |p: &str| -> u32 {
+                let len = p.chars().count();
+                let classes = [
+                    p.chars().any(|c| c.is_ascii_lowercase()),
+                    p.chars().any(|c| c.is_ascii_uppercase()),
+                    p.chars().any(|c| c.is_ascii_digit()),
+                    p.chars().any(|c| !c.is_ascii_alphanumeric()),
+                ]
                 .iter()
-                .map(|(id, origin, user)| json!({"id": id, "origin": origin, "user": user}))
+                .filter(|b| **b)
+                .count();
+                if len >= 12 && classes >= 3 {
+                    2
+                } else if len >= 8 && classes >= 2 {
+                    1
+                } else {
+                    0
+                }
+            };
+            let items: Vec<Value> = list
+                .iter()
+                .map(|(id, origin, user)| {
+                    let (st, reused) = match plains.get(id) {
+                        Some(p) => (strength(p) as i64, seen.get(p).copied().unwrap_or(1) > 1),
+                        None => (-1, false),
+                    };
+                    json!({"id": id, "origin": origin, "user": user, "strength": st, "reused": reused})
+                })
                 .collect();
-            json!({"items": items})
+            let weak = items.iter().filter(|i| i["strength"] == 0).count();
+            let reused = items.iter().filter(|i| i["reused"] == true).count();
+            json!({"items": items, "weak": weak, "reused": reused})
         }
         "tasks" => task_payload(app),
         "import" => {
@@ -383,6 +422,15 @@ pub fn handle_message(app: &mut App, tab_id: u32, json_str: &str) {
                 "dnt" => crate::adblock::set_dnt(value == "1"),
                 "https_only" => crate::adblock::set_https_only(value == "1"),
                 "popup_strict" => crate::adblock::set_strict_popups(value == "1"),
+                "tab_layout" => {
+                    // Sofort umschalten: Kopfflaeche und Inhaltskante aendern sich.
+                    app.top_tabs = value == "top";
+                    app.ind_ready = false;
+                    app.tab_scroll = 0.0;
+                    app.tab_scroll_target = 0.0;
+                    app.relayout();
+                    app.paint();
+                }
                 "glass" | "glass_style" => {
                     // Takes effect on the next start: the window style and the
                     // composition surface are fixed at creation time.

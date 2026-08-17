@@ -67,6 +67,11 @@ table.keys td:last-child{text-align:right;color:rgb(var(--fg-dim))}
         <option value="mica">Mica</option>
         <option value="tabbed">Mica Alt</option>
       </select></div>
+    <div class="row"><div class="lbl"><b>Tab-Leiste</b><small>Seitlich wie Arc – oder oben wie Chrome</small></div>
+      <select id="tab_layout">
+        <option value="side">Seitlich</option>
+        <option value="top">Oben</option>
+      </select></div>
     <div class="row"><div class="lbl"><b>Animationen reduzieren</b><small>Weniger Bewegung, spart Ressourcen</small></div>
       <div class="sw" id="reduce_motion"></div></div>
   </div>
@@ -232,7 +237,7 @@ $('#open_repo').addEventListener('click', () => post({cmd: 'open_new', url: `htt
 let REPO = '';
 const bindSelect = id =>
   $(id).addEventListener('change', e => post({cmd: 'save_setting', key: id.slice(1), value: e.target.value}));
-['#theme', '#search_engine', '#new_tab_page', '#sleep_after_min', '#default_zoom', '#glass_style'].forEach(bindSelect);
+['#theme', '#search_engine', '#new_tab_page', '#sleep_after_min', '#default_zoom', '#glass_style', '#tab_layout'].forEach(bindSelect);
 $('#homepage').addEventListener('change', e => {
   const v = e.target.value.trim() || 'aura://start';
   e.target.value = v;
@@ -271,6 +276,7 @@ window.chrome?.webview?.addEventListener('message', ev => {
   document.documentElement.style.setProperty('--accent', t.accent);
   document.documentElement.style.setProperty('--accent-fg', (a => {const [r,g,b]=String(a).split(',').map(Number); return (r*.299+g*.587+b*.114) > 150 ? '9,9,11' : '255,255,255';})(t.accent));
   $('#theme').value = d.theme;
+  $('#tab_layout').value = d.tab_layout || 'side';
   $('#search_engine').value = d.search_engine;
   $('#new_tab_page').value = d.new_tab_page || 'start';
   $('#sleep_after_min').value = d.sleep_after_min || '15';

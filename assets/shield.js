@@ -57,6 +57,45 @@
       queued.forEach(run);
     }
 
+    // Google IMA (Video-Werbung in Playern, auch in iframes — dieses Skript
+    // läuft in jedem Frame). Der Ersatz meldet auf requestAds() sofort einen
+    // AdError; darauf reagiert jeder korrekt gebaute Player, indem er den
+    // eigentlichen Film startet. Das ist derselbe Ansatz wie das
+    // google-ima-Shim von uBlock Origin: die Werbung schlägt "fehl", der
+    // Inhalt läuft.
+    if (!window.google || !window.google.ima) {
+      const listeners = new WeakMap();
+      class Ev { constructor(t) { this.type = t; } getError() { return { getErrorCode: () => 1005, getMessage: () => 'blocked', getType: () => 'adLoadError', getVastErrorCode: () => 1009 }; } getAdData() { return {}; } }
+      class AdsLoader {
+        constructor() { listeners.set(this, {}); }
+        addEventListener(t, f) { const m = listeners.get(this); (m[t] = m[t] || []).push(f); }
+        removeEventListener() {}
+        requestAds() {
+          const m = listeners.get(this) || {};
+          const fire = t => (m[t] || []).forEach(f => { try { f(new Ev(t)); } catch (e) {} });
+          setTimeout(() => fire('adError'), 1);
+        }
+        contentComplete() {} destroy() {} getSettings() { return ima.settings; }
+      }
+      const ima = {
+        AdDisplayContainer: class { initialize() {} destroy() {} },
+        AdsLoader,
+        AdsManagerLoadedEvent: { Type: { ADS_MANAGER_LOADED: 'adsManagerLoaded' } },
+        AdErrorEvent: { Type: { AD_ERROR: 'adError' } },
+        AdEvent: { Type: { AD_BREAK_READY: 'adBreakReady', ALL_ADS_COMPLETED: 'allAdsCompleted', COMPLETE: 'complete', CONTENT_PAUSE_REQUESTED: 'contentPauseRequested', CONTENT_RESUME_REQUESTED: 'contentResumeRequested', LOADED: 'loaded', STARTED: 'started', CLICK: 'click', SKIPPED: 'skipped' } },
+        AdsRequest: class { setAdWillAutoPlay() {} setAdWillPlayMuted() {} },
+        AdsRenderingSettings: class {},
+        ImaSdkSettings: class { setVpaidMode() {} setLocale() {} setNumRedirects() {} setDisableCustomPlaybackForIOS10Plus() {} setPlayerType() {} setPlayerVersion() {} },
+        UiElements: { AD_ATTRIBUTION: 'adAttribution', COUNTDOWN: 'countdown' },
+        ViewMode: { NORMAL: 'normal', FULLSCREEN: 'fullscreen' },
+        VERSION: '3.660.0',
+        settings: { setVpaidMode() {}, setLocale() {}, setNumRedirects() {}, setPlayerType() {}, setPlayerVersion() {}, setDisableCustomPlaybackForIOS10Plus() {} },
+      };
+      ima.settings.constructor = ima.ImaSdkSettings;
+      window.google = window.google || {};
+      window.google.ima = ima;
+    }
+
     // Messpixel: nur anlegen, wenn die Seite sie noch nicht selbst definiert hat.
     if (typeof window.fbq === 'undefined') { window.fbq = noop; window.fbq.queue = []; }
     if (typeof window.gtag === 'undefined') window.gtag = noop;

@@ -121,6 +121,13 @@ pub fn create_environment(user_data_dir: &str) -> Result<ICoreWebView2Environmen
     env.ok_or(Error::CallbackError("no environment".into()))
 }
 
+/// Ein durchsichtiges 1×1-GIF — die Antwort auf geblockte Bildanfragen.
+const NOOP_GIF: [u8; 43] = [
+    0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x3b,
+];
+
 /// Kicks off async controller creation; completion arrives as AppMsg::ControllerReady.
 pub fn spawn_controller(env: &ICoreWebView2Environment, hwnd: HWND, tab_id: u32) {
     let env = env.clone();
@@ -283,12 +290,45 @@ pub fn attach_events(
                     let _ = args.ResourceContext(&mut ctx);
                 }
                 if crate::adblock::should_block(tab_id, &uri, ctx.0) {
+                    // Nicht einfach scheitern lassen: eine geblockte Anfrage,
+                    // die einen Fehler wirft, verrät den Blocker — Player
+                    // versuchen es erneut, Anti-Adblock springt an. Stattdessen
+                    // bekommt jede Sorte eine harmlose leere Antwort, wie es
+                    // uBlock Origin mit seinen "redirect resources" macht:
+                    // Skripte ein leeres Skript, Bilder ein 1×1-GIF,
+                    // Videowerbung ein leeres VAST-Dokument ("keine Werbung
+                    // verfügbar" — darauf startet jeder Player den Inhalt).
+                    let lower = uri.to_ascii_lowercase();
+                    let vast = lower.contains("vast") || lower.contains("vmap")
+                        || lower.contains("vpaid") || lower.contains("adbreak");
+                    let (body, headers, status): (&[u8], &str, i32) =
+                        if ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT {
+                            (b"", "Content-Type: application/javascript\nAccess-Control-Allow-Origin: *", 200)
+                        } else if ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE {
+                            (&NOOP_GIF, "Content-Type: image/gif\nAccess-Control-Allow-Origin: *", 200)
+                        } else if vast {
+                            (b"<VAST version=\"4.1\"></VAST>",
+                             "Content-Type: application/xml\nAccess-Control-Allow-Origin: *", 200)
+                        } else if ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST
+                            || ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH
+                        {
+                            (b"", "Content-Type: text/plain\nAccess-Control-Allow-Origin: *", 200)
+                        } else {
+                            (b"", "Access-Control-Allow-Origin: *", 403)
+                        };
                     unsafe {
+                        let stream = windows::Win32::UI::Shell::SHCreateMemStream(Some(body));
+                        let hdr = crate::util::wide(headers);
+                        let reason = if status == 200 {
+                            windows::core::w!("OK")
+                        } else {
+                            windows::core::w!("Blocked by Aura Shield")
+                        };
                         if let Ok(resp) = envc.CreateWebResourceResponse(
-                            None,
-                            403,
-                            windows::core::w!("Blocked by Aura Shield"),
-                            windows::core::w!("Access-Control-Allow-Origin: *"),
+                            stream.as_ref(),
+                            status,
+                            reason,
+                            windows::core::PCWSTR(hdr.as_ptr()),
                         ) {
                             let _ = args.SetResponse(&resp);
                         }

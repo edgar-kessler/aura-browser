@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use crate::app::{post, App, AppMsg, APP_PTR};
 use crate::gfx::*;
 use crate::omnibox::Suggestion;
-use crate::theme::{R_LG, R_SM};
+use crate::theme::{R_LG, R_MD, R_SM};
 use crate::util::*;
 
 pub struct MenuItem {
@@ -70,10 +70,15 @@ pub struct Popup {
     alpha: u8,
     t0: u64,
     base_y: i32,
+    /// Fortschritt des Einblendens (0..1, schon geglättet). Skaliert den
+    /// Inhalt von 96 auf 100 Prozent — Menüs wachsen aus ihrem Anker heraus,
+    /// statt fertig aufzuploppen. Dasselbe Ein-Zoomen mit Fade benutzt HeroUI
+    /// für seine Dropdowns.
+    anim_e: f32,
 }
 
-const FADE_MS: f32 = 130.0;
-const SLIDE_PX: f32 = 7.0;
+const FADE_MS: f32 = 150.0;
+const SLIDE_PX: f32 = 5.0;
 const TIMER_FADE: usize = 1;
 
 fn tick() -> u64 {
@@ -265,6 +270,7 @@ fn create(app: &App, kind: PopupKind, x: i32, y: i32, activate: bool) -> Option<
         alpha: if reduce { 255 } else { 0 },
         t0: tick(),
         base_y: y,
+        anim_e: if reduce { 1.0 } else { 0.0 },
     });
     unsafe {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, popup.as_mut() as *mut Popup as isize);
@@ -310,6 +316,16 @@ impl Popup {
             target.BeginDraw();
             let rt: ID2D1RenderTarget = target.cast().unwrap();
             rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+
+            // Ein-Zoomen: der ganze Inhalt wächst um den oberen Ankerpunkt
+            // von 96 auf 100 Prozent, während das Fenster einblendet.
+            let sc = 0.96 + 0.04 * self.anim_e.clamp(0.0, 1.0);
+            let (ax, ay) = (w_dip / 2.0, 6.0);
+            rt.SetTransform(&windows_numerics::Matrix3x2 {
+                M11: sc, M12: 0.0,
+                M21: 0.0, M22: sc,
+                M31: ax * (1.0 - sc), M32: ay * (1.0 - sc),
+            });
 
             // Schlagschatten aus gestapelten durchscheinenden Rechtecken. Ein
             // schwebendes Menü braucht ihn, damit es sich von der Seite löst —
@@ -385,10 +401,18 @@ impl Popup {
                 PopupKind::Suggestions { items, selected } => {
                     let mut y = body.top + 6.0;
                     for (i, s) in items.iter().enumerate() {
-                        let row = rect_f(body.left + 4.0, y, body.right - body.left - 8.0, SUGG_ROW);
+                        let row = rect_f(body.left + 6.0, y, body.right - body.left - 12.0, SUGG_ROW);
                         if i == *selected {
-                            if let Ok(b) = brush(&rt, theme.accent_soft) {
-                                rt.FillRoundedRectangle(&rounded(row, R_SM), &b);
+                            // Gewählte Zeile: ruhige Fläche plus Akzentbalken,
+                            // statt einer eingefärbten Wanne.
+                            if let Ok(b) = brush(&rt, theme.hover) {
+                                rt.FillRoundedRectangle(&rounded(row, R_MD), &b);
+                            }
+                            if let Ok(b) = brush(&rt, theme.accent_f) {
+                                rt.FillRoundedRectangle(
+                                    &rounded(rect_f(row.left + 3.0, row.top + 10.0, 3.0, SUGG_ROW - 20.0), 1.5),
+                                    &b,
+                                );
                             }
                         }
                         // favicon / kind glyph
@@ -457,6 +481,9 @@ impl Popup {
                 }
             }
 
+            rt.SetTransform(&windows_numerics::Matrix3x2 {
+                M11: 1.0, M12: 0.0, M21: 0.0, M22: 1.0, M31: 0.0, M32: 0.0,
+            });
             let _ = target.EndDraw(None, None);
         }
         // push to screen
@@ -621,6 +648,7 @@ unsafe extern "system" fn popup_wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPAR
                 let p = ((tick().saturating_sub(popup.t0)) as f32 / FADE_MS).clamp(0.0, 1.0);
                 let e = 1.0 - (1.0 - p) * (1.0 - p) * (1.0 - p);
                 popup.alpha = (e * 255.0) as u8;
+                popup.anim_e = e;
                 let mut wr = RECT::default();
                 let _ = GetWindowRect(hwnd, &mut wr);
                 let y = popup.base_y + ((1.0 - e) * SLIDE_PX) as i32;

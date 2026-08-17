@@ -39,6 +39,10 @@ const TIMER_SLEEP: usize = 3;
 const TIMER_SESSION: usize = 4;
 
 const TOPBAR_H: f32 = 56.0;
+/// Tab-Leiste oben (wie Chrome): Höhe der Tabzeile und der Werkzeugzeile
+/// darunter. Zusammen ersetzen sie die 56er-Kopfzeile des Seitenmodus.
+const TS_H: f32 = 36.0;
+const TOOL_H: f32 = 48.0;
 const SB_COLLAPSED: f32 = 64.0;
 /// Voreingestellte Breite der aufgeklappten Leiste. Der Nutzer zieht sie an
 /// der Kante auf jede Breite dazwischen; gespeichert wird sie als `sidebar_width`.
@@ -230,6 +234,11 @@ pub struct App {
     /// Setzt `relayout` aus, die Seite neu einzupassen — siehe
     /// `follow_content_edge`.
     hold_webviews: bool,
+    /// Der Nutzer zieht gerade am Fensterrand (WM_ENTERSIZEMOVE).
+    in_size_move: bool,
+    /// Tabs oben wie bei Chrome statt in der Seitenleiste (Einstellung
+    /// `tab_layout` = "top").
+    pub top_tabs: bool,
     /// Das Adressfeld — selbst gezeichnet, siehe crate::textfield.
     pub omni: crate::textfield::TextField,
     /// Läuft gerade eine Auswahl mit gedrückter Maustaste im Adressfeld?
@@ -257,7 +266,7 @@ pub struct App {
     hot_prev_t: f32,
     ind_y: f32,
     ind_h: f32,
-    ind_ready: bool,
+    pub ind_ready: bool,
     anim_last: u64,
     anim_on: bool,
 
@@ -333,6 +342,7 @@ impl App {
         };
         let (dr, dg, db) = crate::theme::ACCENT_DEFAULT;
         let accent = parse_accent(&storage.get_setting("accent", &format!("{dr},{dg},{db}")));
+        let top_tabs = storage.get_setting("tab_layout", "side") == "top";
         let reduce_motion = storage.get_setting("reduce_motion", "0") == "1";
         let theme = Theme::new(theme_mode, accent, reduce_motion);
 
@@ -496,6 +506,8 @@ impl App {
             sb_push_at: 0,
             sb_push_gap: 16,
             hold_webviews: false,
+            in_size_move: false,
+            top_tabs,
             omni: crate::textfield::TextField::new(),
             omni_drag: false,
             sb_spring: crate::anim::Spring::new(SB_COLLAPSED, SPRING_SIDEBAR.0, SPRING_SIDEBAR.1),
@@ -754,6 +766,18 @@ impl App {
                     let _ = ValidateRect(Some(hwnd), None);
                     return LRESULT(0);
                 }
+                WM_ENTERSIZEMOVE => {
+                    self.in_size_move = true;
+                    return LRESULT(0);
+                }
+                WM_EXITSIZEMOVE => {
+                    // Am Ende der Bewegung bekommt die Seite einmal, erzwungen,
+                    // ihre endgültigen Maße.
+                    self.in_size_move = false;
+                    self.relayout_throttled(true);
+                    self.paint();
+                    return LRESULT(0);
+                }
                 WM_SIZE => {
                     let rc = client_rect(hwnd);
                     if let Some(rt) = &self.rt {
@@ -766,7 +790,15 @@ impl App {
                     if let Some(c) = self.comp.as_mut() {
                         c.resize(rc.right as u32, rc.bottom as u32, scale);
                     }
-                    self.relayout();
+                    // Beim Ziehen am Fensterrand wird die eigene Oberfläche
+                    // jedes Mal neu vermessen, die Seite aber nur im gemessenen
+                    // Takt — jedes SetBounds ist ein voller Neuaufbau der Seite,
+                    // und ungebremst ruckelt das ganze Fenster.
+                    if self.in_size_move {
+                        self.relayout_throttled(false);
+                    } else {
+                        self.relayout();
+                    }
                     self.paint();
                     return LRESULT(0);
                 }
@@ -873,7 +905,7 @@ impl App {
                         self.toggle_sidebar();
                     } else if self.hot == Hot::Omnibox {
                         self.begin_edit();
-                    } else if self.hot == Hot::None && y_lparam(l) as f32 / self.scale < TOPBAR_H {
+                    } else if self.hot == Hot::None && y_lparam(l) as f32 / self.scale < self.top_h() {
                         // Double-click on empty chrome toggles maximize, like a titlebar.
                         let cmd = if IsZoomed(hwnd).as_bool() { SW_RESTORE } else { SW_MAXIMIZE };
                         let _ = ShowWindow(hwnd, cmd);
@@ -891,8 +923,12 @@ impl App {
                     let mut p = POINT { x: x_lparam(l), y: y_lparam(l) }; // screen coords
                     let _ = ScreenToClient(hwnd, &mut p);
                     let xd = p.x as f32 / self.scale;
-                    if xd < self.sidebar_w && self.tab_scroll_max > 0.0 {
-                        let step = if self.sidebar_w < 150.0 { 48.0 } else { 40.0 } * 3.0;
+                    let yd = p.y as f32 / self.scale;
+                    let over_tabs = if self.top_tabs { yd < TS_H } else { xd < self.sidebar_w };
+                    if over_tabs && self.tab_scroll_max > 0.0 {
+                        let step = if self.top_tabs {
+                            120.0
+                        } else if self.sidebar_w < 150.0 { 48.0 * 3.0 } else { 40.0 * 3.0 };
                         let before = self.tab_scroll_target;
                         self.tab_scroll_target =
                             (self.tab_scroll_target - delta as f32 / 120.0 * step).clamp(0.0, self.tab_scroll_max);
@@ -1051,7 +1087,7 @@ impl App {
         // Caption area: topbar, but not over interactive elements.
         let xd = x as f32 / self.scale;
         let yd = y as f32 / self.scale;
-        if yd < TOPBAR_H && xd >= self.sidebar_w {
+        if yd < self.top_h() && (self.top_tabs || xd >= self.sidebar_w) {
             let hot = self.hit(xd, yd);
             if hot == Hot::None {
                 return LRESULT(HTCAPTION as isize);
@@ -1060,11 +1096,25 @@ impl App {
         LRESULT(HTCLIENT as isize)
     }
 
+    /// Höhe der Kopffläche: eine Zeile im Seitenmodus, zwei im Top-Modus.
+    fn top_h(&self) -> f32 {
+        if self.top_tabs { TS_H + TOOL_H } else { TOPBAR_H }
+    }
+
+    /// Linke Kante des Inhalts. Im Top-Modus gibt es keine Seitenleiste.
+    fn content_left_eff(&self) -> f32 {
+        if self.top_tabs { 0.0 } else { self.content_left }
+    }
+
     // ---------------- layout ----------------
     pub fn relayout(&mut self) {
         let rc = client_rect(self.hwnd);
         let w = rc.right as f32 / self.scale;
         let h = rc.bottom as f32 / self.scale;
+        if self.top_tabs {
+            self.relayout_top(rc, w);
+            return;
+        }
         let sw = self.sidebar_w;
         let mut l = Layout::default();
 
@@ -1159,10 +1209,87 @@ impl App {
             }
         }
 
-        // Content area (physical px) for webviews — pinned to content_left, not
-        // to the animating sidebar width.
-        let cx = (self.content_left * self.scale).round() as i32;
-        let cy = (TOPBAR_H * self.scale).round() as i32;
+        self.finish_layout(rc, l);
+    }
+
+    /// Layout im Top-Modus: Tabzeile oben (mit den Fensterknöpfen), darunter
+    /// die Werkzeugzeile mit Navigation und Adressfeld. Keine Seitenleiste.
+    fn relayout_top(&mut self, rc: RECT, w: f32) {
+        let mut l = Layout::default();
+
+        // Fensterknöpfe in der Tabzeile.
+        let caps_w = CAP_W * 3.0 + 12.0;
+        let cy = (TS_H - CAP_H) / 2.0;
+        l.cap_close = rect_f(w - CAP_W - 8.0, cy, CAP_W, CAP_H);
+        l.cap_max = rect_f(w - CAP_W * 2.0 - 8.0, cy, CAP_W, CAP_H);
+        l.cap_min = rect_f(w - CAP_W * 3.0 - 8.0, cy, CAP_W, CAP_H);
+
+        // Werkzeugzeile.
+        let by = TS_H + (TOOL_H - 32.0) / 2.0;
+        l.back = rect_f(8.0, by, 32.0, 32.0);
+        l.fwd = rect_f(46.0, by, 32.0, 32.0);
+        l.reload = rect_f(84.0, by, 32.0, 32.0);
+        l.menu = rect_f(w - 42.0, by, 32.0, 32.0);
+        l.downloads = rect_f(w - 80.0, by, 32.0, 32.0);
+        l.shield = rect_f(w - 118.0, by, 32.0, 32.0);
+        let ob_left = 124.0;
+        let ob_right = w - 134.0;
+        let ob_y = TS_H + (TOOL_H - 36.0) / 2.0;
+        l.omnibox = rect_f(ob_left, ob_y, (ob_right - ob_left).max(200.0), 36.0);
+        l.star = rect_f(ob_right - 42.0, ob_y + 2.0, 32.0, 32.0);
+
+        // Tabs: feste Spanne, die sich den Platz teilt — schmaler werdend wie
+        // bei Chrome, angeheftete nur so breit wie ihr Symbol.
+        let x0 = 8.0;
+        let avail = (w - x0 - caps_w - 46.0).max(60.0);
+        let pinned: f32 = self
+            .tabs
+            .iter()
+            .filter(|t| t.pinned)
+            .map(|t| 34.0 * t.appear)
+            .sum();
+        let normal = self.tabs.iter().filter(|t| !t.pinned).count().max(1) as f32;
+        let tw = ((avail - pinned) / normal).clamp(70.0, 208.0);
+        let total: f32 = self
+            .tabs
+            .iter()
+            .map(|t| if t.pinned { 34.0 * t.appear } else { tw * t.appear })
+            .sum();
+        self.tab_scroll_max = (total - avail).max(0.0);
+        self.tab_scroll_target = self.tab_scroll_target.clamp(0.0, self.tab_scroll_max);
+        self.tab_scroll = self.tab_scroll.clamp(0.0, self.tab_scroll_max);
+        l.tab_view = rect_f(x0, 0.0, avail, TS_H);
+
+        let mut x = x0 - self.tab_scroll;
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let slot = if tab.pinned { 34.0 * tab.appear } else { tw * tab.appear };
+            let visible = x + slot > x0 && x < x0 + avail && tab.appear > 0.02;
+            if visible {
+                let tab_w = (slot - 4.0).max(1.0);
+                let row = rect_f(x, 4.0, tab_w, TS_H - 8.0);
+                l.tab_rows.push((i, row));
+                if !tab.pinned && tab.appear > 0.9 && tab_w >= 96.0 {
+                    l.tab_close.push((
+                        i,
+                        rect_f(row.right - 26.0, row.top + (row.bottom - row.top - 22.0) / 2.0, 22.0, 22.0),
+                    ));
+                }
+            }
+            x += slot;
+        }
+        let plus_x = (x0 + total - self.tab_scroll + 2.0).min(x0 + avail + 6.0);
+        l.plus = rect_f(plus_x, (TS_H - 28.0) / 2.0, 30.0, 28.0);
+        // Orb, Zahnrad und Greifkante gibt es hier nicht — ihre Rechtecke
+        // bleiben leer und treffen nie.
+
+        self.finish_layout(rc, l);
+    }
+
+    /// Gemeinsamer Schluss beider Layouts: Inhaltsbereich, Markenfeder,
+    /// Eingabefelder, Seitengeometrie.
+    fn finish_layout(&mut self, rc: RECT, mut l: Layout) {
+        let cx = (self.content_left_eff() * self.scale).round() as i32;
+        let cy = (self.top_h() * self.scale).round() as i32;
         l.content = if self.fs_element {
             RECT { left: 0, top: 0, right: rc.right, bottom: rc.bottom }
         } else {
@@ -1180,22 +1307,13 @@ impl App {
         }
 
         // Position edit controls (physical px).
-        let ob = self.layout.omnibox;
         let s = self.scale;
         unsafe {
-            let _ = MoveWindow(
-                self.edit,
-                ((ob.left + 38.0) * s) as i32,
-                ((ob.top + 7.0) * s) as i32,
-                ((ob.right - ob.left - 80.0) * s) as i32,
-                (24.0 * s) as i32,
-                true,
-            );
             let fw = 320.0 * s;
             let _ = MoveWindow(
                 self.find_edit,
                 rc.right - (fw + 16.0 * s) as i32,
-                ((TOPBAR_H + 8.0) * s) as i32,
+                ((self.top_h() + 8.0) * s) as i32,
                 fw as i32,
                 (28.0 * s) as i32,
                 true,
@@ -1220,16 +1338,21 @@ impl App {
     /// Umbruch am Ende der Bewegung.
     fn follow_content_edge(&mut self, left: f32, force: bool) {
         self.content_left = left;
+        self.relayout_throttled(force);
+    }
+
+    /// Vermisst die Oberfläche sofort, die Seite aber höchstens im gemessenen
+    /// Takt: die Dauer des letzten Umbruchs, verdoppelt. Leichte Seiten laufen
+    /// so bei jedem Bild mit, schwere bremsen sich selbst.
+    fn relayout_throttled(&mut self, force: bool) {
         let now = now_ms();
         let due = force || now.saturating_sub(self.sb_push_at) >= self.sb_push_gap;
-        // Die eigene Oberfläche wird immer neu vermessen — nur die Seite wartet
-        // auf ihren Takt. Sonst stünde beim Ziehen auch die Leiste still.
         self.hold_webviews = !due;
         self.relayout();
         self.hold_webviews = false;
         if due {
             let cost = now_ms().saturating_sub(now);
-            self.sb_push_gap = (cost * 2).clamp(16, 120);
+            self.sb_push_gap = (cost * 2).clamp(16, 80);
             self.sb_push_at = now_ms();
         }
     }
@@ -1351,12 +1474,13 @@ impl App {
         let rc = client_rect(self.hwnd);
         let w = rc.right as f32 / self.scale;
         let h = rc.bottom as f32 / self.scale;
-        let sw = self.sidebar_w;
+        let top = self.top_h();
+        let sw = if self.top_tabs { 0.0 } else { self.sidebar_w };
         // On the composition surface our visual sits *above* the WebView child
         // window, so the content area has to stay untouched — otherwise the
         // chrome paints straight over the page.
         let overlay = self.comp.is_some();
-        let content_x = if self.fs_element { w } else { self.content_left };
+        let content_x = if self.fs_element { w } else { self.content_left_eff() };
         unsafe {
             if overlay {
                 rt.Clear(None);
@@ -1366,18 +1490,20 @@ impl App {
 
             // ---- topbar ----
             if let Ok(b) = brush(rt, theme.bg_top) {
-                rt.FillRectangle(&rect_f(sw, 0.0, w - sw, TOPBAR_H), &b);
+                rt.FillRectangle(&rect_f(sw, 0.0, w - sw, top), &b);
             }
 
             // ---- sidebar ----
-            if let Ok(b) = brush(rt, theme.sidebar_bg) {
-                rt.FillRectangle(&rect_f(0.0, 0.0, sw, h), &b);
+            if !self.top_tabs {
+                if let Ok(b) = brush(rt, theme.sidebar_bg) {
+                    rt.FillRectangle(&rect_f(0.0, 0.0, sw, h), &b);
+                }
             }
 
             // Gap between the sidebar and the page while the sidebar animates.
             if overlay && content_x > sw {
                 if let Ok(b) = brush(rt, theme.bg) {
-                    rt.FillRectangle(&rect_f(sw, TOPBAR_H, content_x - sw, h - TOPBAR_H), &b);
+                    rt.FillRectangle(&rect_f(sw, top, content_x - sw, h - top), &b);
                 }
             }
 
@@ -1392,16 +1518,45 @@ impl App {
                 .unwrap_or(true);
             if overlay && waiting {
                 if let Ok(b) = brush(rt, theme.bg) {
-                    rt.FillRectangle(&rect_f(content_x, TOPBAR_H, w - content_x, h - TOPBAR_H), &b);
+                    rt.FillRectangle(&rect_f(content_x, top, w - content_x, h - top), &b);
+                }
+            }
+
+            // Beim Vergrößern des Fensters (oder Ziehen der Leiste) hinkt die
+            // Seite ihren neuen Maßen hinterher — der noch nicht bedeckte Rest
+            // des Inhaltsbereichs wäre durchsichtig, auf dem Bildschirm ein
+            // schwarzer Streifen. Bis die Seite nachgezogen hat, bekommt er die
+            // Farbe des Fensters.
+            if overlay && !waiting && self.split.is_none() {
+                if let Some(lb) = self.tabs.get(self.active).and_then(|t| t.last_bounds) {
+                    let s = self.scale;
+                    let c = self.layout.content;
+                    let (cl, ct) = (c.left as f32 / s, c.top as f32 / s);
+                    let (cr, cb) = (c.right as f32 / s, c.bottom as f32 / s);
+                    let (lr, lbot) = (lb.right as f32 / s, lb.bottom as f32 / s);
+                    let ll = lb.left as f32 / s;
+                    if let Ok(b) = brush(rt, theme.bg) {
+                        if lr < cr - 0.5 {
+                            rt.FillRectangle(&rect_f(lr, ct, cr - lr, cb - ct), &b);
+                        }
+                        if lbot < cb - 0.5 {
+                            rt.FillRectangle(&rect_f(cl, lbot, cr - cl, cb - lbot), &b);
+                        }
+                        if ll > cl + 0.5 {
+                            rt.FillRectangle(&rect_f(cl, ct, ll - cl, cb - ct), &b);
+                        }
+                    }
                 }
             }
 
             // ---- separators ----
             if let Ok(b) = brush(rt, theme.border) {
-                rt.FillRectangle(&rect_f(sw - 1.0, 0.0, 1.0, h), &b);
+                if !self.top_tabs {
+                    rt.FillRectangle(&rect_f(sw - 1.0, 0.0, 1.0, h), &b);
+                }
                 if !self.fs_element {
-                    let cl = self.content_left.min(sw);
-                    rt.FillRectangle(&rect_f(cl, TOPBAR_H - 1.0, w - cl, 1.0), &b);
+                    let cl = self.content_left_eff().min(sw);
+                    rt.FillRectangle(&rect_f(cl, top - 1.0, w - cl, 1.0), &b);
                 }
             }
             self.paint_progress(rt, &theme, w, sw);
@@ -1409,14 +1564,151 @@ impl App {
             self.paint_nav(rt, &theme);
             self.paint_omnibox(rt, &theme);
             self.paint_caption(rt, &theme, w);
-            self.paint_sidebar(rt, &theme, h);
+            if self.top_tabs {
+                self.paint_topstrip(rt, &theme, w);
+            } else {
+                self.paint_sidebar(rt, &theme, h);
+            }
+        }
+    }
+
+    /// Die Tabzeile im Top-Modus: Tabs als flache Flächen, die aktive mit
+    /// einer Unterstreichung, die zwischen den Tabs gleitet.
+    fn paint_topstrip(&mut self, rt: &ID2D1RenderTarget, theme: &Theme, w: f32) {
+        unsafe {
+            // Bitmaps für frisch geladene Favicons anlegen (braucht &mut).
+            for i in 0..self.tabs.len() {
+                if self.tabs[i].favicon.is_some() {
+                    continue;
+                }
+                let png = match &self.tabs[i].favicon_png {
+                    Some(p) => p.clone(),
+                    None => continue,
+                };
+                if let Ok(bmp) = self.gfx.bitmap_from_bytes(rt, &png) {
+                    self.tabs[i].favicon = Some(bmp);
+                }
+            }
+
+            let view = self.layout.tab_view;
+            rt.PushAxisAlignedClip(
+                &rect_f(view.left, 0.0, view.right - view.left + 40.0, TS_H),
+                D2D1_ANTIALIAS_MODE_ALIASED,
+            );
+            for (i, r) in self.layout.tab_rows.clone() {
+                let tab = &self.tabs[i];
+                let is_active = i == self.active;
+                let hovered = self.hot == Hot::Tab(i) || self.hot == Hot::TabClose(i);
+                if is_active {
+                    if let Ok(b) = brush(rt, theme.active) {
+                        rt.FillRoundedRectangle(&rounded(r, R_MD), &b);
+                    }
+                } else {
+                    let t = self.hover_t(Hot::Tab(i));
+                    if t > 0.0 {
+                        if let Ok(b) = brush(rt, theme.hover_at(t)) {
+                            rt.FillRoundedRectangle(&rounded(r, R_MD), &b);
+                        }
+                    }
+                }
+                let fade = tab.appear.clamp(0.0, 1.0);
+                if fade < 0.999 {
+                    rt.PushLayer(
+                        &D2D1_LAYER_PARAMETERS {
+                            contentBounds: r,
+                            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                            opacity: fade,
+                            ..Default::default()
+                        },
+                        None,
+                    );
+                }
+                // Favicon — bei angehefteten Tabs mittig, sonst links.
+                let icon = 16.0;
+                let ix = if tab.pinned { (r.left + r.right) / 2.0 - icon / 2.0 } else { r.left + 9.0 };
+                let iy = (r.top + r.bottom) / 2.0 - icon / 2.0;
+                let icon_rect = rect_f(ix, iy, icon, icon);
+                if let Some(bmp) = &tab.favicon {
+                    rt.DrawBitmap(bmp, Some(&icon_rect), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
+                } else {
+                    if let Ok(b) = brush(rt, theme.active) {
+                        rt.FillRoundedRectangle(&rounded(icon_rect, 3.0), &b);
+                    }
+                    let ch = tab.domain().chars().next().unwrap_or('A').to_uppercase().to_string();
+                    if let Ok(b) = brush(rt, theme.text_dim) {
+                        let t: Vec<u16> = ch.encode_utf16().collect();
+                        self.fmt_small.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).ok();
+                        self.fmt_small.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
+                        rt.DrawText(&t, &self.fmt_small, &icon_rect, &b, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                    }
+                }
+                // Titel, mit Platz fürs Kreuz nur solange die Zeile berührt wird.
+                if !tab.pinned && r.right - r.left > 56.0 {
+                    let right_gap = if hovered { 30.0 } else { 8.0 };
+                    let title = if tab.title.is_empty() { tab.domain() } else { tab.title.clone() };
+                    if let Ok(b) = brush(rt, if is_active { theme.text } else { theme.text_dim }) {
+                        let t: Vec<u16> = title.encode_utf16().collect();
+                        self.fmt_ui.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING).ok();
+                        self.fmt_ui.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
+                        rt.DrawText(
+                            &t,
+                            &self.fmt_ui,
+                            &rect_f(r.left + 30.0, r.top, (r.right - r.left - 30.0 - right_gap).max(1.0), r.bottom - r.top),
+                            &b,
+                            D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                            DWRITE_MEASURING_MODE_NATURAL,
+                        );
+                    }
+                }
+                if hovered {
+                    if let Some((_, cr)) = self.layout.tab_close.iter().find(|(ti, _)| *ti == i) {
+                        let cr = *cr;
+                        let ct = self.hover_t(Hot::TabClose(i));
+                        if ct > 0.0 {
+                            let mut c = theme.danger;
+                            c.a = 0.16 * ct;
+                            if let Ok(b) = brush(rt, c) {
+                                rt.FillRoundedRectangle(&rounded(cr, R_XS), &b);
+                            }
+                        }
+                        if let Ok(b) = brush(rt, theme.text_dim) {
+                            let t: Vec<u16> = "\u{E711}".encode_utf16().collect();
+                            self.fmt_icon_sm.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).ok();
+                            self.fmt_icon_sm.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
+                            rt.DrawText(&t, &self.fmt_icon_sm, &cr, &b, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
+                        }
+                    }
+                }
+                if fade < 0.999 {
+                    rt.PopLayer();
+                }
+            }
+
+            // Unterstreichung der aktiven Zeile — läuft auf den beiden Federn.
+            if self.ind_ready && self.ind_h > 1.0 {
+                if let Ok(b) = brush(rt, theme.accent_f) {
+                    rt.FillRoundedRectangle(
+                        &rounded(rect_f(self.ind_y, TS_H - 3.0, self.ind_h, 2.5), 1.25),
+                        &b,
+                    );
+                }
+            }
+            rt.PopAxisAlignedClip();
+
+            // Neuer Tab.
+            self.sidebar_row(rt, theme, self.layout.plus, Hot::Plus, "\u{E710}", "", true);
+
+            // Haarlinie zwischen Tabzeile und Werkzeugzeile.
+            if let Ok(b) = brush(rt, theme.border) {
+                rt.FillRectangle(&rect_f(0.0, TS_H - 0.5, w, 0.5), &b);
+            }
         }
     }
 
     /// Indeterminate loading sweep along the bottom edge of the topbar.
     fn paint_progress(&self, rt: &ID2D1RenderTarget, theme: &Theme, w: f32, sw: f32) {
         let loading = self.tabs.get(self.active).map(|t| t.loading).unwrap_or(false);
-        let track = rect_f(sw, TOPBAR_H - 2.0, w - sw, 2.0);
+        let track = rect_f(sw, self.top_h() - 2.0, w - sw, 2.0);
         if !loading {
             return;
         }
@@ -2090,11 +2382,15 @@ impl App {
         if inside(&l.star) { return Hot::Star; }
         if inside(&l.omnibox) { return Hot::Omnibox; }
         // Der Greifstreifen liegt über allem in der Leiste, sonst wäre er unter
-        // den Zeilen am Rand nicht zu treffen.
-        if inside(&l.sb_edge) { return Hot::SbEdge; }
-        if inside(&l.orb) { return Hot::Orb; }
+        // den Zeilen am Rand nicht zu treffen. Im Top-Modus gibt es Orb,
+        // Zahnrad und Greifkante nicht — ihre leeren Rechtecke dürfen nicht
+        // ausgerechnet bei (0,0) treffen.
+        if !self.top_tabs {
+            if inside(&l.sb_edge) { return Hot::SbEdge; }
+            if inside(&l.orb) { return Hot::Orb; }
+            if inside(&l.gear) { return Hot::Gear; }
+        }
         if inside(&l.plus) { return Hot::Plus; }
-        if inside(&l.gear) { return Hot::Gear; }
         for (i, r) in &l.tab_close {
             if inside(r) && self.hot == Hot::Tab(*i) {
                 return Hot::TabClose(*i);
@@ -2156,7 +2452,7 @@ impl App {
             }
             self.hide_tooltip();
             if let Hot::Tab(i) = hot {
-                if self.sidebar_w < 150.0 {
+                if !self.top_tabs && self.sidebar_w < 150.0 {
                     self.tooltip_tab = Some(i);
                     unsafe {
                         let _ = SetTimer(Some(self.hwnd), TIMER_TOOLTIP, 450, None);
@@ -2256,6 +2552,9 @@ impl App {
 
     // ---------------- sidebar ----------------
     fn toggle_sidebar(&mut self) {
+        if self.top_tabs {
+            return;
+        }
         self.expanded = !self.expanded;
         self.sidebar_target = if self.expanded { self.sb_wide } else { SB_COLLAPSED };
         self.storage
@@ -2598,6 +2897,7 @@ impl App {
             },
             "chrome": {
                 "sidebar": self.sidebar_w, "expanded": self.expanded,
+                "top_tabs": self.top_tabs,
                 "content_left": self.content_left, "editing": self.editing,
                 "glass": self.glass, "tab_scroll": self.tab_scroll,
             },
@@ -2939,9 +3239,16 @@ impl App {
     }
 
     /// Where the accent bar of the active tab should sit (y, height in DIP).
+    /// Ziel der Aktiv-Marke. Seitlich: (y, Höhe) des Balkens an der Kante.
+    /// Oben: (x, Breite) der Unterstreichung — dieselben zwei Federn, nur
+    /// entlang der anderen Achse.
     fn indicator_target(&self) -> (f32, f32) {
         for (i, r) in &self.layout.tab_rows {
             if *i == self.active {
+                if self.top_tabs {
+                    let inset = (r.right - r.left) * 0.18;
+                    return (r.left + inset, (r.right - r.left) - inset * 2.0);
+                }
                 let inset = (r.bottom - r.top) * 0.22;
                 return (r.top + inset, (r.bottom - r.top) - inset * 2.0);
             }

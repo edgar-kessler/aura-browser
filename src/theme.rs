@@ -107,8 +107,6 @@ pub struct Theme {
     pub text_dim: D2D1_COLOR_F,
     /// Vollton des Akzents.
     pub accent_f: D2D1_COLOR_F,
-    /// Der Akzent als Fläche, sehr zurückhaltend.
-    pub accent_soft: D2D1_COLOR_F,
     /// Schrift auf dem Vollton — je nach dessen Helligkeit hell oder dunkel.
     pub on_accent: D2D1_COLOR_F,
     /// Stufe 2 — Menüs und Sprechblasen heben sich um eine Stufe ab.
@@ -141,7 +139,6 @@ impl Theme {
             text: rgb(s.text),
             text_dim: rgb(s.dim),
             accent_f: color(ar, ag, ab, 1.0),
-            accent_soft: color(ar, ag, ab, if dark { 0.18 } else { 0.13 }),
             on_accent: if luminance(accent) > 0.58 {
                 color(0, 0, 0, 1.0)
             } else {
