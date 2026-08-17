@@ -6,28 +6,38 @@
 <link rel="stylesheet" href="/aura.css">
 <style>
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px}
-.stat{padding:16px 18px;border-radius:var(--r-lg);background:rgba(var(--card),var(--card-a));
-  border:1px solid rgba(var(--line),var(--line-a))}
-.stat .k{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:rgb(var(--fg-dim))}
+.stat{padding:16px;border-radius:var(--r-lg);background:rgb(var(--card));border:1px solid rgb(var(--line))}
+.stat .k{font-size:13px;font-weight:500;color:rgb(var(--fg-dim))}
 .stat .v{margin-top:6px;font-size:24px;font-weight:600;font-variant-numeric:tabular-nums}
-table{width:100%;border-collapse:collapse;font-size:13px}
-th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1.1px;color:rgb(var(--fg-dim));
-  font-weight:600;padding:8px 10px;border-bottom:1px solid rgba(var(--line),var(--line-a))}
-td{padding:9px 10px;border-bottom:1px solid rgba(var(--line),.07);vertical-align:middle}
+/* shadcn-Tabelle: leichte Kopfzeile, Zeilentrenner, Hover als Fläche.
+   table-layout:fixed hält die Spalten in der Karte – sonst drückt ein langer
+   Tab-Titel die Aktionsspalte über den Rand hinaus. */
+.card{overflow:hidden}
+table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:14px}
+col.status{width:124px}
+col.num{width:88px}
+col.acts{width:172px}
+col.pid{width:88px}
+col.mem{width:136px}
+th{text-align:left;font-size:13px;color:rgb(var(--fg-dim));
+  font-weight:500;padding:10px;border-bottom:1px solid rgb(var(--line))}
+td{padding:10px;border-bottom:1px solid rgb(var(--line));vertical-align:middle}
 tr:last-child td{border-bottom:none}
-tbody tr{transition:background .2s var(--ease)}
-tbody tr:hover{background:rgba(var(--card),var(--card-a))}
-td.num{text-align:right;font-variant-numeric:tabular-nums}
+tbody tr{transition:background .15s var(--ease)}
+tbody tr:hover{background:rgb(var(--muted))}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 .pill-row{display:flex;align-items:center;gap:9px;min-width:0}
-.pill-row img,.pill-row .ph{width:18px;height:18px;border-radius:5px;flex:none}
-.pill-row .ph{display:grid;place-items:center;font-size:10px;font-weight:700;
-  color:rgb(var(--accent));background:rgba(var(--accent),.16)}
-.pill-row span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;
-  background:rgba(var(--line),.12);color:rgb(var(--fg-dim))}
-.tag.on{background:rgba(var(--accent),.16);color:rgb(var(--accent))}
-.tag.sleep{background:rgba(var(--line),.10)}
-.rowbtn{padding:5px 10px;font-size:12px}
+.pill-row img,.pill-row .ph{width:16px;height:16px;border-radius:3px;flex:none}
+.pill-row .ph{display:grid;place-items:center;font-size:9px;font-weight:600;
+  color:rgb(var(--fg-dim));background:rgb(var(--muted))}
+.pill-row span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+td{overflow:hidden}
+.tag{display:inline-block;padding:2px 8px;border-radius:var(--r-full);font-size:12px;font-weight:500;
+  white-space:nowrap;background:rgb(var(--muted));color:rgb(var(--fg-dim));border:1px solid rgb(var(--line))}
+.tag.on{background:rgba(var(--success),.12);color:rgb(var(--success));border-color:rgba(var(--success),.25)}
+.tag.sleep{background:transparent}
+.acts{display:flex;gap:6px;justify-content:flex-end}
+.rowbtn{height:28px;padding:0 10px;font-size:13px;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -39,14 +49,18 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
   <div class="stats" id="stats"></div>
 
   <h2>Tabs</h2>
-  <div class="card"><table id="tabs"><thead><tr>
-    <th>Tab</th><th>Status</th><th class="num">Blockiert</th><th></th>
-  </tr></thead><tbody></tbody></table></div>
+  <div class="card"><table id="tabs">
+    <colgroup><col><col class="status"><col class="num"><col class="acts"></colgroup>
+    <thead><tr>
+      <th>Tab</th><th>Status</th><th class="num">Blockiert</th><th></th>
+    </tr></thead><tbody></tbody></table></div>
 
   <h2>Prozesse</h2>
-  <div class="card"><table id="procs"><thead><tr>
-    <th>Prozess</th><th class="num">PID</th><th class="num">Arbeitsspeicher</th>
-  </tr></thead><tbody></tbody></table></div>
+  <div class="card"><table id="procs">
+    <colgroup><col><col class="pid"><col class="mem"></colgroup>
+    <thead><tr>
+      <th>Prozess</th><th class="num">PID</th><th class="num">Arbeitsspeicher</th>
+    </tr></thead><tbody></tbody></table></div>
 </div>
 <script>
 const $ = s => document.querySelector(s);
@@ -69,6 +83,7 @@ window.chrome?.webview?.addEventListener('message', ev => {
   document.body.classList.toggle('dark', !!m.theme.dark);
   document.body.classList.toggle('reduce', !!m.theme.reduce);
   document.documentElement.style.setProperty('--accent', m.theme.accent);
+  document.documentElement.style.setProperty('--accent-fg', (a => {const [r,g,b]=String(a).split(',').map(Number); return (r*.299+g*.587+b*.114) > 150 ? '9,9,11' : '255,255,255';})(m.theme.accent));
   const d = m.data || {}, tabs = d.tabs || [], procs = d.procs || [];
 
   const loaded = tabs.filter(t => t.loaded && !t.asleep).length;
@@ -94,8 +109,8 @@ window.chrome?.webview?.addEventListener('message', ev => {
       + `<span></span></div></td>`
       + `<td>${state}${t.audio ? ' <span class="tag on">Ton</span>' : ''}${t.pinned ? ' <span class="tag">fix</span>' : ''}</td>`
       + `<td class="num">${num(t.blocked)}</td>`
-      + `<td class="num"><button class="rowbtn" data-a="go">Anzeigen</button> `
-      + `<button class="rowbtn danger" data-a="close">Beenden</button></td>`;
+      + `<td><div class="acts"><button class="rowbtn" data-a="go">Anzeigen</button>`
+      + `<button class="rowbtn danger" data-a="close">Beenden</button></div></td>`;
     tr.querySelector('span').textContent = t.title || h;
     tr.title = t.url;
     tr.querySelector('[data-a=go]').addEventListener('click', () => post({cmd: 'tab_activate', index: t.index}));

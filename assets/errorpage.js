@@ -12,10 +12,13 @@
     const accent = '__ACCENT__';
     const dark = __DARK__;
     const info = window.__auraError || {};
-    const fg = dark ? '236,237,238' : '17,24,28';
-    const dim = dark ? '150,150,162' : '113,113,122';
+    const fg = dark ? '250,250,250' : '9,9,11';
+    const dim = dark ? '161,161,170' : '113,113,122';
     const bg = dark ? '9,9,11' : '255,255,255';
-    const line = dark ? '255,255,255' : '24,24,27';
+    const line = dark ? '63,63,70' : '212,212,216';
+    // Helle Akzente brauchen dunkle Schrift, sonst ist der Button unlesbar.
+    const [ar, ag, ab] = accent.split(',').map(Number);
+    const onAccent = (ar * .299 + ag * .587 + ab * .114) > 150 ? '9,9,11' : '255,255,255';
 
     // Ueberschrift und Erklaerung aus dem Fehlercode ableiten.
     const status = info.status || 0;
@@ -79,20 +82,21 @@
       body{min-height:100vh;display:grid;place-items:center;padding:40px;
         font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
         background:rgb(${bg});color:rgb(${fg})}
-      .wrap{max-width:520px;text-align:center;animation:rise .45s cubic-bezier(.32,.72,0,1) both}
-      .ico{width:56px;height:56px;margin-bottom:22px;stroke:rgb(${accent});fill:none;stroke-width:1.5;
+      .wrap{max-width:480px;text-align:center;animation:rise .2s cubic-bezier(.4,0,.2,1) both}
+      .ico{width:44px;height:44px;margin-bottom:20px;stroke:rgb(${dim});fill:none;stroke-width:1.5;
         stroke-linecap:round}
-      h1{font-size:26px;font-weight:600;letter-spacing:-.5px;margin-bottom:10px}
-      .lead{font-size:15px;line-height:1.6;color:rgb(${dim})}
-      .host{margin-top:18px;font-size:12px;color:rgb(${dim});opacity:.75;word-break:break-all}
-      .row{display:flex;gap:10px;justify-content:center;margin-top:28px}
-      button{padding:10px 20px;border-radius:12px;border:1px solid transparent;
-        background:rgb(${accent});color:#fff;font:inherit;font-size:14px;cursor:pointer;
-        transition:transform .2s cubic-bezier(.32,.72,0,1),filter .2s}
-      button:hover{transform:translateY(-1px);filter:brightness(1.08)}
-      button.ghost{background:transparent;color:rgb(${fg});border-color:rgba(${line},.22)}
-      button.ghost:hover{border-color:rgb(${accent});color:rgb(${accent});filter:none}
-      @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}`;
+      h1{font-size:24px;font-weight:600;letter-spacing:-.4px;margin-bottom:8px}
+      .lead{font-size:14px;line-height:1.6;color:rgb(${dim})}
+      .host{margin-top:16px;font-size:12px;color:rgb(${dim});word-break:break-all}
+      .row{display:flex;gap:8px;justify-content:center;margin-top:28px}
+      button{display:inline-flex;align-items:center;justify-content:center;height:36px;padding:0 16px;
+        border-radius:6px;border:1px solid transparent;
+        background:rgb(${accent});color:rgb(${onAccent});font:inherit;font-size:14px;font-weight:500;cursor:pointer;
+        transition:background .15s cubic-bezier(.4,0,.2,1),border-color .15s}
+      button:hover{filter:brightness(1.06)}
+      button.ghost{background:transparent;color:rgb(${fg});border-color:rgb(${line})}
+      button.ghost:hover{background:rgb(${line});filter:none}
+      @keyframes rise{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}`;
     document.head.appendChild(style);
 
     document.getElementById('retry').addEventListener('click', () => {

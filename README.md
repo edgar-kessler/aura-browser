@@ -84,7 +84,58 @@ python bench/stress_tabs.py   # Speicher bei vielen Tabs
 | [`src/pages.rs`](src/pages.rs) | Interne Seiten, Chrome-Import, Task-Manager |
 | [`src/storage.rs`](src/storage.rs) | SQLite: Verlauf, Lesezeichen, Sitzung, Passwörter |
 | [`src/update.rs`](src/update.rs) | Auto-Update über GitHub Releases |
+| [`src/devtools.rs`](src/devtools.rs) | Fernsteuerung: HTTP-Server auf localhost |
 | [`assets/`](assets) | Interne Seiten (`aura://…`), gemeinsames Stylesheet, Basis-Filterliste |
+
+## Fernsteuerung
+
+Aura lässt sich von außen steuern und untersuchen — Zustand abfragen,
+navigieren, klicken, tippen, JavaScript ausführen, das DevTools-Protokoll
+ansprechen und Screenshots ziehen. Gedacht zum Entwickeln und für automatische
+Tests.
+
+Standardmäßig **aus**. Einschalten beim Start:
+
+```bash
+aura-browser.exe --debug-port=9333
+```
+
+Der Server hört ausschließlich auf `127.0.0.1` und verlangt ein Token. Port,
+Token und PID landen beim Start in
+`%LOCALAPPDATA%\AuraBrowser\<Profil>\devcontrol.json`.
+
+Beiliegender Client ([`tools/aura_ctl.py`](tools/aura_ctl.py)) findet beides von
+selbst:
+
+```bash
+python tools/aura_ctl.py state
+```
+
+```bash
+python tools/aura_ctl.py shot fenster.png --full
+```
+
+| Endpunkt | Zweck |
+|---|---|
+| `GET /state` | Fenster, Tabs, Shield-Zahlen, Chrome-Layout als JSON |
+| `POST /window` | `restore`, `minimize`, `maximize`, `foreground`, `size` |
+| `POST /navigate` | `url`, optional `tab` |
+| `POST /tab` | `new`, `close`, `activate` |
+| `POST /click` | Klick auf Auras eigene Oberfläche (`x`, `y` in Bildpunkten) |
+| `POST /key` | Tastenkürzel mit `vk`, `ctrl`, `shift`, `alt` |
+| `POST /eval` | JavaScript in der aktiven Seite, Ergebnis als JSON |
+| `POST /cdp` | Beliebige DevTools-Protokoll-Methode (`method`, `params`) |
+| `POST /screenshot` | PNG der Seite, mit `full` das ganze Fenster samt Oberfläche |
+
+Als Modul:
+
+```python
+from aura_ctl import Aura
+a = Aura()
+a.navigate("https://stripe.com")
+a.wait_for("main")
+a.screenshot("stripe.png", full=True)
+```
 
 ## Lizenz
 

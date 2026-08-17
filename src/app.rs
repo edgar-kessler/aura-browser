@@ -15,6 +15,8 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use serde_json::{json, Value};
+
 use crate::gfx::*;
 use crate::omnibox::{self, Suggestion};
 use crate::popup::{self, MenuItem, Popup, PopupKind};
@@ -29,6 +31,8 @@ pub const WM_FILTERS: u32 = WM_APP + 2;
 /// An update was found (WPARAM ignored) / an update was installed (WPARAM = ok).
 pub const WM_UPDATE_FOUND: u32 = WM_APP + 3;
 pub const WM_UPDATE_READY: u32 = WM_APP + 4;
+/// Ein Befehl der Fernsteuerung wartet auf Ausführung im UI-Thread.
+pub const WM_DEBUG: u32 = WM_APP + 5;
 const TIMER_ANIM: usize = 1;
 const TIMER_TOOLTIP: usize = 2;
 const TIMER_SLEEP: usize = 3;
@@ -36,7 +40,7 @@ const TIMER_SESSION: usize = 4;
 
 const TOPBAR_H: f32 = 56.0;
 const SB_COLLAPSED: f32 = 64.0;
-const SB_EXPANDED: f32 = 268.0;
+const SB_EXPANDED: f32 = 284.0;
 const CAP_W: f32 = 40.0;
 const CAP_H: f32 = 34.0;
 
@@ -144,7 +148,7 @@ pub enum UpdateState {
     Failed,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Hot {
     None,
     Back,
@@ -251,6 +255,8 @@ pub struct App {
     /// Update found on GitHub, plus how far the installation got.
     pub pending_update: Option<crate::update::Release>,
     pub update_state: UpdateState,
+    /// Zeitpunkte der zuletzt zugelassenen Fenster (Popup-Bremse).
+    popup_times: Vec<u64>,
 
     pub fullscreen: bool,
     pub fs_element: bool,
@@ -278,6 +284,7 @@ impl App {
         let mut profile = "Default".to_string();
         let mut private = false;
         let mut start_url: Option<String> = None;
+        let mut debug_port: Option<u16> = None;
         let mut i = 1;
         while i < args.len() {
             if let Some(p) = args[i].strip_prefix("--profile=") {
@@ -285,6 +292,8 @@ impl App {
             } else if args[i] == "--private" {
                 private = true;
                 profile = format!("__private_{}", std::process::id());
+            } else if let Some(p) = args[i].strip_prefix("--debug-port=") {
+                debug_port = p.parse::<u16>().ok().or(Some(0));
             } else if let Some(u) = args[i].strip_prefix("--url=") {
                 start_url = Some(u.to_string());
             } else if !args[i].starts_with("--") {
@@ -322,6 +331,14 @@ impl App {
         crate::adblock::set_dnt(storage.get_setting("dnt", "1") == "1");
         crate::adblock::set_https_only(storage.get_setting("https_only", "1") == "1");
         crate::adblock::set_strict_popups(storage.get_setting("popup_strict", "0") == "1");
+        crate::adblock::set_popup_abusers(
+            &storage
+                .get_setting("popup_abusers", "")
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+        );
         crate::adblock::set_strict_sites(
             &storage
                 .get_setting("shield_strict", "")
@@ -483,6 +500,7 @@ impl App {
             pending_permission: None,
             pending_update: None,
             update_state: UpdateState::Idle,
+            popup_times: Vec::new(),
             fullscreen: false,
             fs_element: false,
             saved_placement: WINDOWPLACEMENT::default(),
@@ -576,6 +594,25 @@ impl App {
         unsafe {
             let _ = SetTimer(Some(hwnd), TIMER_SLEEP, 60_000, None);
             let _ = SetTimer(Some(hwnd), TIMER_SESSION, 30_000, None);
+        }
+
+        // Fernsteuerung nur auf ausdrücklichen Wunsch – sie erlaubt vollen
+        // Zugriff auf den Browser und hört deshalb ausschließlich auf localhost.
+        let want_debug = debug_port.or_else(|| {
+            app.storage
+                .get_setting("debug_server", "")
+                .parse::<u16>()
+                .ok()
+                .filter(|_| app.storage.get_setting("debug_server", "") != "")
+        });
+        if let Some(port) = want_debug {
+            let dir = Storage::data_dir(&app.profile);
+            if let Some(actual) = crate::devtools::start(hwnd.0 as isize, WM_DEBUG, port, &dir) {
+                eprintln!(
+                    "Fernsteuerung auf http://127.0.0.1:{actual}  (Token in {})",
+                    dir.join("devcontrol.json").display()
+                );
+            }
         }
 
         // Look for a new release shortly after start, once per day at most.
@@ -809,6 +846,10 @@ impl App {
                     self.reload_filters();
                     return LRESULT(0);
                 }
+                WM_DEBUG => {
+                    self.handle_debug_request();
+                    return LRESULT(0);
+                }
                 WM_UPDATE_FOUND => {
                     if let Some(rel) = crate::update::take_pending() {
                         self.pending_update = Some(rel);
@@ -931,7 +972,8 @@ impl App {
         let collapsed = self.sidebar_w < 150.0;
         let list_top = 66.0;
         let list_bottom = h - 104.0; // room for "new tab" + settings
-        let row_h = if collapsed { 48.0 } else { 40.0 };
+        // Zeilenraster inklusive Abstand; ausgeklappt darf es luftiger sein.
+        let row_h = if collapsed { 50.0 } else { 46.0 };
         let content_h: f32 = self.tabs.iter().map(|t| row_h * t.appear).sum();
         let view_h = (list_bottom - list_top).max(row_h);
         self.tab_scroll_max = (content_h - view_h).max(0.0);
@@ -947,13 +989,14 @@ impl App {
             // and painting stay O(visible) even with hundreds of tabs.
             let visible = y + slot > list_top && y < list_bottom && tab.appear > 0.02;
             if visible {
-                let inner = (slot - 4.0).max(1.0);
+                let inner = (slot - 6.0).max(1.0);
                 if collapsed || tab.pinned {
                     l.tab_rows.push((i, rect_f(10.0, y, sw - 20.0, inner.min(44.0))));
                 } else {
-                    l.tab_rows.push((i, rect_f(8.0, y, sw - 16.0, inner.min(36.0))));
+                    let hgt = inner.min(40.0);
+                    l.tab_rows.push((i, rect_f(10.0, y, sw - 20.0, hgt)));
                     if tab.appear > 0.9 {
-                        l.tab_close.push((i, rect_f(sw - 42.0, y + 4.0, 28.0, 28.0)));
+                        l.tab_close.push((i, rect_f(sw - 44.0, y + (hgt - 28.0) / 2.0, 28.0, 28.0)));
                     }
                 }
             }
@@ -1683,7 +1726,7 @@ impl App {
                         rt.DrawText(
                             &t,
                             &self.fmt_ui,
-                            &rect_f(r.left + 40.0, r.top, r.right - r.left - 72.0, r.bottom - r.top),
+                            &rect_f(r.left + 42.0, r.top, r.right - r.left - 78.0, r.bottom - r.top),
                             &b,
                             D2D1_DRAW_TEXT_OPTIONS_CLIP,
                             DWRITE_MEASURING_MODE_NATURAL,
@@ -1984,6 +2027,265 @@ impl App {
     }
 
     // ---------------- shield ----------------
+    // ---------------- Fernsteuerung ----------------
+    /// Führt einen Befehl der Fernsteuerung aus. Läuft im UI-Thread, weil
+    /// WebView2 und Direct2D nur von dort angesprochen werden dürfen.
+    fn handle_debug_request(&mut self) {
+        use crate::devtools::{b64_decode, Response};
+        let Some(req) = crate::devtools::take_request() else { return };
+        let arg = |k: &str| -> Option<String> {
+            req.body
+                .get(k)
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .or_else(|| req.query.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()))
+        };
+        let num = |k: &str| -> Option<i64> {
+            req.body
+                .get(k)
+                .and_then(|v| v.as_i64())
+                .or_else(|| arg(k).and_then(|s| s.parse().ok()))
+        };
+
+        let response = match req.path.as_str() {
+            "/state" => Response::json(self.debug_state()),
+            "/window" => {
+                let action = arg("action").unwrap_or_default();
+                unsafe {
+                    match action.as_str() {
+                        "restore" => {
+                            let _ = ShowWindow(self.hwnd, SW_RESTORE);
+                        }
+                        "minimize" => {
+                            let _ = ShowWindow(self.hwnd, SW_MINIMIZE);
+                        }
+                        "maximize" => {
+                            let _ = ShowWindow(self.hwnd, SW_MAXIMIZE);
+                        }
+                        "foreground" => {
+                            let _ = ShowWindow(self.hwnd, SW_RESTORE);
+                            let _ = SetForegroundWindow(self.hwnd);
+                        }
+                        "size" => {
+                            let (w, h) = (num("width").unwrap_or(1440), num("height").unwrap_or(900));
+                            let _ = SetWindowPos(
+                                self.hwnd, None, 0, 0, w as i32, h as i32,
+                                SWP_NOMOVE | SWP_NOZORDER,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+                self.relayout();
+                self.paint();
+                Response::json(self.debug_state())
+            }
+            "/navigate" => match arg("url") {
+                Some(url) => {
+                    let idx = num("tab").map(|t| t as usize).unwrap_or(self.active);
+                    self.navigate(idx, &url);
+                    Response::json(json!({ "ok": true, "url": url }))
+                }
+                None => Response::error(400, "url fehlt"),
+            },
+            "/tab" => {
+                let action = arg("action").unwrap_or_default();
+                match action.as_str() {
+                    "new" => {
+                        let url = arg("url").unwrap_or_else(|| self.new_tab_url());
+                        let i = self.new_tab(&url, true);
+                        Response::json(json!({ "ok": true, "index": i }))
+                    }
+                    "close" => {
+                        let i = num("index").map(|v| v as usize).unwrap_or(self.active);
+                        self.close_tab(i);
+                        Response::json(json!({ "ok": true }))
+                    }
+                    "activate" => {
+                        let i = num("index").map(|v| v as usize).unwrap_or(0);
+                        self.activate_tab(i);
+                        Response::json(json!({ "ok": true, "active": self.active }))
+                    }
+                    _ => Response::error(400, "action muss new, close oder activate sein"),
+                }
+            }
+            "/click" => {
+                // Klick auf die eigene Oberfläche – ohne Maus, ohne Fokus.
+                let (x, y) = (num("x").unwrap_or(0) as f32, num("y").unwrap_or(0) as f32);
+                let hot = self.hit(x, y);
+                self.set_hot(hot);
+                self.on_click(hot);
+                Response::json(json!({ "ok": true, "hit": format!("{hot:?}") }))
+            }
+            "/key" => {
+                let vk = num("vk").unwrap_or(0) as u32;
+                let ctrl = req.body.get("ctrl").and_then(|v| v.as_bool()).unwrap_or(false);
+                let shift = req.body.get("shift").and_then(|v| v.as_bool()).unwrap_or(false);
+                let alt = req.body.get("alt").and_then(|v| v.as_bool()).unwrap_or(false);
+                let handled = self.shortcut(vk, ctrl, shift, alt);
+                Response::json(json!({ "ok": true, "handled": handled }))
+            }
+            "/eval" => match arg("js") {
+                Some(js) => match self.debug_eval(&js) {
+                    Some(v) => Response::json(json!({ "result": v })),
+                    None => Response::error(500, "Skript lieferte kein Ergebnis"),
+                },
+                None => Response::error(400, "js fehlt"),
+            },
+            "/cdp" => match arg("method") {
+                Some(method) => {
+                    let params = req
+                        .body
+                        .get("params")
+                        .cloned()
+                        .unwrap_or_else(|| json!({}))
+                        .to_string();
+                    match self.debug_cdp(&method, &params) {
+                        Some(v) => Response::json(v),
+                        None => Response::error(500, "DevTools-Aufruf fehlgeschlagen"),
+                    }
+                }
+                None => Response::error(400, "method fehlt"),
+            },
+            "/screenshot" => {
+                // Ohne `full` nur die Seite, mit `full` das ganze Fenster samt
+                // eigener Oberfläche – dafür wird die Seite in den Inhaltsbereich
+                // der Chrome-Aufnahme einkopiert.
+                let full = arg("full").map(|v| v != "0" && v != "false").unwrap_or(false)
+                    || req.body.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+                let page = {
+                    let params =
+                        json!({ "format": "png", "captureBeyondViewport": false }).to_string();
+                    self.debug_cdp("Page.captureScreenshot", &params)
+                        .and_then(|v| v.get("data").and_then(|d| d.as_str()).map(b64_decode))
+                };
+                if !full {
+                    match page {
+                        Some(bytes) => Response::png(bytes),
+                        None => Response::error(500, "Screenshot fehlgeschlagen"),
+                    }
+                } else {
+                    match self.debug_shot_window(page) {
+                        Some(png) => Response::png(png),
+                        None => Response::error(500, "Fensteraufnahme fehlgeschlagen"),
+                    }
+                }
+            }
+            _ => Response::error(404, "unbekannter Pfad"),
+        };
+        crate::devtools::put_response(response);
+    }
+
+    /// Nimmt das ganze Fenster auf: erst die eigene Oberfläche direkt aus dem
+    /// Rückpuffer, dann das PNG der Seite an die richtige Stelle einkopiert.
+    fn debug_shot_window(&mut self, page_png: Option<Vec<u8>>) -> Option<Vec<u8>> {
+        let (w, h, mut px) = {
+            let c = self.comp.as_ref()?;
+            c.begin().ok()?;
+            let rt = c.target();
+            self.paint_chrome(&rt);
+            let shot = self.comp.as_ref()?.read_back();
+            let _ = self.comp.as_ref()?.end();
+            shot?
+        };
+
+        if let Some(bytes) = page_png {
+            if let Some((pw, ph, page)) = decode_png_bgra(&self.gfx.wic, &bytes) {
+                let x0 = self.layout.content.left.max(0) as u32;
+                let y0 = self.layout.content.top.max(0) as u32;
+                for y in 0..ph.min(h.saturating_sub(y0)) {
+                    for x in 0..pw.min(w.saturating_sub(x0)) {
+                        let s = ((y * pw + x) * 4) as usize;
+                        let d = (((y + y0) * w + (x + x0)) * 4) as usize;
+                        px[d..d + 4].copy_from_slice(&page[s..s + 4]);
+                    }
+                }
+            }
+        }
+        crate::gfx::encode_png(&self.gfx.wic, w, h, px)
+    }
+
+    fn debug_state(&self) -> Value {
+        let mut rect = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(self.hwnd, &mut rect);
+        }
+        let tabs: Vec<Value> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                json!({
+                    "index": i, "id": t.id, "title": t.title, "url": t.url,
+                    "active": i == self.active, "loaded": t.controller.is_some(),
+                    "asleep": t.asleep, "closing": t.closing,
+                    "blocked": crate::adblock::blocked_for(t.id),
+                })
+            })
+            .collect();
+        let (total, rules, cosmetic, _) = crate::adblock::stats();
+        json!({
+            "version": crate::update::VERSION,
+            "window": {
+                "x": rect.left, "y": rect.top,
+                "width": rect.right - rect.left, "height": rect.bottom - rect.top,
+                "minimized": unsafe { IsIconic(self.hwnd) }.as_bool(),
+                "maximized": unsafe { IsZoomed(self.hwnd) }.as_bool(),
+                "scale": self.scale,
+            },
+            "chrome": {
+                "sidebar": self.sidebar_w, "expanded": self.expanded,
+                "content_left": self.content_left, "editing": self.editing,
+                "glass": self.glass, "tab_scroll": self.tab_scroll,
+            },
+            "shield": { "total": total, "rules": rules, "cosmetic": cosmetic },
+            "tabs": tabs,
+            "active": self.active,
+        })
+    }
+
+    /// Führt JavaScript in der aktiven Seite aus und wartet auf das Ergebnis.
+    fn debug_eval(&self, js: &str) -> Option<Value> {
+        let wv = self.tabs.get(self.active)?.webview.clone()?;
+        let out = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+        let sink = out.clone();
+        let script = wide(js);
+        webview2_com::ExecuteScriptCompletedHandler::wait_for_async_operation(
+            Box::new(move |handler| unsafe {
+                wv.ExecuteScript(PCWSTR(script.as_ptr()), &handler)
+                    .map_err(webview2_com::Error::WindowsError)
+            }),
+            Box::new(move |_, result| {
+                *sink.borrow_mut() = Some(result);
+                Ok(())
+            }),
+        )
+        .ok()?;
+        let text = out.borrow_mut().take()?;
+        Some(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+    }
+
+    /// Spricht das DevTools-Protokoll der aktiven Seite an (wie Playwright).
+    fn debug_cdp(&self, method: &str, params_json: &str) -> Option<Value> {
+        let wv = self.tabs.get(self.active)?.webview.clone()?;
+        let out = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+        let sink = out.clone();
+        let m = wide(method);
+        let p = wide(params_json);
+        webview2_com::CallDevToolsProtocolMethodCompletedHandler::wait_for_async_operation(
+            Box::new(move |handler| unsafe {
+                wv.CallDevToolsProtocolMethod(PCWSTR(m.as_ptr()), PCWSTR(p.as_ptr()), &handler)
+                    .map_err(webview2_com::Error::WindowsError)
+            }),
+            Box::new(move |_, result| {
+                *sink.borrow_mut() = Some(result);
+                Ok(())
+            }),
+        )
+        .ok()?;
+        let text = out.borrow_mut().take()?;
+        Some(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+    }
+
     // ---------------- updates ----------------
     /// Asks GitHub whether a newer release exists.
     pub fn check_update(&mut self) {
@@ -2593,6 +2895,14 @@ impl App {
                 if crate::adblock::is_blocked_popup(tab, &uri) {
                     return;
                 }
+                // Fensterflut bremsen: Streaming-Seiten werfen bei jedem Klick
+                // ein neues Fenster aus. Nach zwei in zehn Sekunden ist Schluss,
+                // und die Seite gilt fortan als Popup-Schleuder.
+                if !self.allow_popup_now(tab) {
+                    crate::adblock::count_blocked(tab);
+                    self.paint();
+                    return;
+                }
                 let block = self.storage.get_setting("block_popups", "1") == "1"
                     || crate::adblock::tab_is_strict(tab);
                 if !block || user_initiated {
@@ -2966,6 +3276,13 @@ impl App {
                 if strict { "E72E" } else { "E785" },
                 "shield_strict",
             ));
+            if crate::adblock::is_popup_abuser(&host) {
+                items.push(MenuItem::new(
+                    "Fenster wieder zulassen",
+                    "E8A7",
+                    "allow_popups_here",
+                ));
+            }
             if crate::adblock::https_only() && !crate::adblock::http_allowed(&host) {
                 items.push(MenuItem::new("HTTP für diese Seite erlauben", "E785", "allow_http"));
             }
@@ -3140,6 +3457,16 @@ impl App {
             "read_later" => self.add_to_reading_list(),
             "translate" => self.translate_page(),
             "tabsearch" => self.open_tab_search(),
+            "allow_popups_here" => {
+                let host = self.tabs.get(self.active).map(|t| host_of(&t.url)).unwrap_or_default();
+                if !host.is_empty() {
+                    crate::adblock::forget_popup_abuser(&host);
+                    let list = crate::adblock::popup_abusers().join(",");
+                    self.storage.set_setting("popup_abusers", &list);
+                    self.popup_times.clear();
+                    self.reload_active();
+                }
+            }
             "allow_http" => {
                 let host = self.tabs.get(self.active).map(|t| host_of(&t.url)).unwrap_or_default();
                 if !host.is_empty() {
@@ -3672,6 +3999,30 @@ impl App {
         self.exec_action(&format!("pin:{i}"));
     }
 
+    /// Darf diese Seite gerade noch ein Fenster öffnen? Zwei innerhalb von zehn
+    /// Sekunden sind normal (Login-Popup, PDF); alles darüber ist eine Flut.
+    fn allow_popup_now(&mut self, tab: u32) -> bool {
+        const WINDOW_MS: u64 = 10_000;
+        const LIMIT: usize = 2;
+        let now = now_ms();
+        self.popup_times.retain(|t| now.saturating_sub(*t) < WINDOW_MS);
+        if self.popup_times.len() < LIMIT {
+            self.popup_times.push(now);
+            return true;
+        }
+        // Ab jetzt gilt die Seite als Schleuder — auch für künftige Besuche.
+        let host = self
+            .tab_index_by_id(tab)
+            .and_then(|i| self.tabs.get(i))
+            .map(|t| host_of(&t.url))
+            .unwrap_or_default();
+        if !host.is_empty() && crate::adblock::note_popup_abuse(&host) {
+            let list = crate::adblock::popup_abusers().join(",");
+            self.storage.set_setting("popup_abusers", &list);
+        }
+        false
+    }
+
     /// Toggles the current page in the reading list.
     fn add_to_reading_list(&mut self) {
         let Some(t) = self.tabs.get(self.active) else { return };
@@ -3886,9 +4237,19 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM, 
         if msg == WM_CHAR && (w.0 as u32 == 0x0D || w.0 as u32 == 0x1B) {
             return LRESULT(0);
         }
-        // Losing focus closes the field — it must never linger over the page.
+        // Fokusverlust schließt das Feld, damit es nicht über der Seite hängen
+        // bleibt. Aber nur, wenn der Fokus wirklich weg ist: das eigene
+        // Kontextmenü (Kopieren!) und unsere Vorschlagsliste gehören dazu.
         if msg == WM_KILLFOCUS {
-            post(AppMsg::OmniCancel { edit: hwnd });
+            let next = HWND(w.0 as *mut core::ffi::c_void);
+            let ours = !next.is_invalid() && {
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(next, Some(&mut pid));
+                pid == std::process::id()
+            };
+            if !ours {
+                post(AppMsg::OmniCancel { edit: hwnd });
+            }
         }
         DefSubclassProc(hwnd, msg, w, l)
     }
@@ -3896,7 +4257,7 @@ unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM, 
 
 fn icon_font(gfx: &Gfx, size: f32) -> Result<IDWriteTextFormat> {
     unsafe {
-        gfx.dwrite.CreateTextFormat(
+        let fmt = gfx.dwrite.CreateTextFormat(
             w!("Segoe MDL2 Assets"),
             None,
             DWRITE_FONT_WEIGHT_NORMAL,
@@ -3904,7 +4265,9 @@ fn icon_font(gfx: &Gfx, size: f32) -> Result<IDWriteTextFormat> {
             DWRITE_FONT_STRETCH_NORMAL,
             size,
             w!("de-de"),
-        )
+        )?;
+        let _ = fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        Ok(fmt)
     }
 }
 

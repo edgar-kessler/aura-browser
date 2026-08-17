@@ -68,7 +68,7 @@ impl Gfx {
 
     pub fn text_format(&self, size: f32, weight: DWRITE_FONT_WEIGHT) -> Result<IDWriteTextFormat> {
         unsafe {
-            self.dwrite.CreateTextFormat(
+            let fmt = self.dwrite.CreateTextFormat(
                 windows::core::w!("Segoe UI Variable Text"),
                 None,
                 weight,
@@ -76,7 +76,9 @@ impl Gfx {
                 DWRITE_FONT_STRETCH_NORMAL,
                 size,
                 windows::core::w!("de-de"),
-            )
+            )?;
+            single_line(&self.dwrite, &fmt);
+            Ok(fmt)
         }
     }
 
@@ -118,6 +120,23 @@ impl Gfx {
                 WICBitmapPaletteTypeCustom,
             )?;
             rt.CreateBitmapFromWicBitmap(&conv, None)
+        }
+    }
+}
+
+/// Eine Zeile, kein Umbruch, überlanger Text endet in Auslassungspunkten.
+/// Ohne das brechen URLs, Tab-Titel und Tooltips mitten im Wort um und laufen
+/// aus ihren Feldern heraus.
+fn single_line(dwrite: &IDWriteFactory, fmt: &IDWriteTextFormat) {
+    unsafe {
+        let _ = fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        if let Ok(sign) = dwrite.CreateEllipsisTrimmingSign(fmt) {
+            let trim = DWRITE_TRIMMING {
+                granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                delimiter: 0,
+                delimiterCount: 0,
+            };
+            let _ = fmt.SetTrimming(&trim, &sign);
         }
     }
 }
@@ -271,6 +290,112 @@ impl Composition {
 
     pub fn target(&self) -> ID2D1RenderTarget {
         self.dc.cast().unwrap()
+    }
+
+    /// Liest den aktuellen Rückpuffer als BGRA-Pixel aus. Muss zwischen
+    /// `begin()` und `end()` laufen – nach dem Present ist der Puffer beim
+    /// Flip-Modell nicht mehr definiert.
+    pub fn read_back(&self) -> Option<(u32, u32, Vec<u8>)> {
+        unsafe {
+            let back: ID3D11Texture2D = self.swap.GetBuffer(0).ok()?;
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            back.GetDesc(&mut desc);
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            desc.MiscFlags = 0;
+
+            let device: ID3D11Device = back.GetDevice().ok()?;
+            let mut staging: Option<ID3D11Texture2D> = None;
+            device.CreateTexture2D(&desc, None, Some(&mut staging)).ok()?;
+            let staging = staging?;
+
+            let ctx = device.GetImmediateContext().ok()?;
+            ctx.CopyResource(&staging, &back);
+
+            let mut map = D3D11_MAPPED_SUBRESOURCE::default();
+            ctx.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut map)).ok()?;
+            let (w, h) = (desc.Width, desc.Height);
+            let mut out = vec![0u8; (w * h * 4) as usize];
+            for y in 0..h as usize {
+                let src = (map.pData as *const u8).add(y * map.RowPitch as usize);
+                let dst = out.as_mut_ptr().add(y * w as usize * 4);
+                std::ptr::copy_nonoverlapping(src, dst, w as usize * 4);
+            }
+            ctx.Unmap(&staging, 0);
+            Some((w, h, out))
+        }
+    }
+}
+
+/// Entpackt ein PNG in rohe BGRA-Pixel – Gegenstück zu `encode_png`.
+pub fn decode_png_bgra(wic: &IWICImagingFactory, bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    unsafe {
+        let stream = wic.CreateStream().ok()?;
+        stream.InitializeFromMemory(bytes).ok()?;
+        let decoder = wic
+            .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnLoad)
+            .ok()?;
+        let frame = decoder.GetFrame(0).ok()?;
+        let conv = wic.CreateFormatConverter().ok()?;
+        conv.Initialize(
+            &frame,
+            &GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherTypeNone,
+            None,
+            0.0,
+            WICBitmapPaletteTypeCustom,
+        )
+        .ok()?;
+        let (mut w, mut h) = (0u32, 0u32);
+        conv.GetSize(&mut w, &mut h).ok()?;
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        conv.CopyPixels(std::ptr::null(), w * 4, &mut px).ok()?;
+        Some((w, h, px))
+    }
+}
+
+/// Packt BGRA-Pixel (vormultipliziert) als PNG. Der Alphakanal wird auf
+/// deckend gesetzt, damit der Glaseffekt im Bild nicht als Loch erscheint.
+pub fn encode_png(wic: &IWICImagingFactory, w: u32, h: u32, mut px: Vec<u8>) -> Option<Vec<u8>> {
+    for p in px.chunks_exact_mut(4) {
+        p[3] = 255;
+    }
+    unsafe {
+        let mem = windows::Win32::System::Com::StructuredStorage::CreateStreamOnHGlobal(
+            windows::Win32::Foundation::HGLOBAL(std::ptr::null_mut()),
+            true,
+        )
+        .ok()?;
+        let encoder = wic.CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null()).ok()?;
+        encoder.Initialize(&mem, WICBitmapEncoderNoCache).ok()?;
+        let mut frame: Option<IWICBitmapFrameEncode> = None;
+        let mut opts: Option<windows::Win32::System::Com::StructuredStorage::IPropertyBag2> = None;
+        encoder.CreateNewFrame(&mut frame, &mut opts).ok()?;
+        let frame = frame?;
+        frame.Initialize(opts.as_ref()).ok()?;
+        frame.SetSize(w, h).ok()?;
+        let mut fmt = GUID_WICPixelFormat32bppBGRA;
+        frame.SetPixelFormat(&mut fmt).ok()?;
+        frame.WritePixels(h, w * 4, &px).ok()?;
+        frame.Commit().ok()?;
+        encoder.Commit().ok()?;
+
+        // Den Speicherstrom wieder auslesen.
+        let mut stat = windows::Win32::System::Com::STATSTG::default();
+        mem.Stat(&mut stat, windows::Win32::System::Com::STATFLAG(1)).ok()?;
+        let len = stat.cbSize as usize;
+        mem.Seek(0, windows::Win32::System::Com::STREAM_SEEK_SET, None).ok()?;
+        let mut out = vec![0u8; len];
+        let mut read = 0u32;
+        if mem
+            .Read(out.as_mut_ptr() as *mut _, len as u32, Some(&mut read))
+            .is_err()
+        {
+            return None;
+        }
+        out.truncate(read as usize);
+        Some(out)
     }
 }
 

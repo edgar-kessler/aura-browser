@@ -9,11 +9,12 @@ pub enum ThemeMode {
     System,
 }
 
-/// Corner radii (DIP), HeroUI-inspired: soft, generous, consistent.
-pub const R_XS: f32 = 8.0;
-pub const R_SM: f32 = 11.0;
-pub const R_MD: f32 = 14.0;
-pub const R_LG: f32 = 18.0;
+/// Eckenradien (DIP). Zurückhaltender als zuvor – näher an shadcn/Stripe:
+/// klare Kanten, kleine Radien, die Ruhe kommt aus Abständen statt aus Rundung.
+pub const R_XS: f32 = 6.0;
+pub const R_SM: f32 = 8.0;
+pub const R_MD: f32 = 10.0;
+pub const R_LG: f32 = 14.0;
 
 #[derive(Clone)]
 pub struct Theme {
@@ -45,23 +46,25 @@ impl Theme {
         };
         let (ar, ag, ab) = accent;
         if dark {
+            // shadcn "zinc dark": fast schwarze Fläche, die Leiste eine Spur
+            // abgesetzt, Trennlinien sichtbar aber leise.
             Theme {
                 dark,
                 accent,
                 reduce_motion,
-                bg: color(9, 9, 11, 1.0),          // zinc-950
+                bg: color(9, 9, 11, 1.0),           // zinc-950
                 bg_top: color(9, 9, 11, 1.0),
-                sidebar_bg: color(9, 9, 11, 1.0),
-                input_bg: color(255, 255, 255, 0.06),
-                hover: color(255, 255, 255, 0.08),
-                active: color(255, 255, 255, 0.13),
-                border: color(255, 255, 255, 0.10),
-                text: color(236, 237, 238, 1.0),
-                text_dim: color(150, 150, 162, 1.0),
+                sidebar_bg: color(12, 12, 15, 1.0), // eine Nuance heller
+                input_bg: color(255, 255, 255, 0.045),
+                hover: color(255, 255, 255, 0.06),
+                active: color(255, 255, 255, 0.10),
+                border: color(255, 255, 255, 0.08),
+                text: color(250, 250, 250, 1.0),    // zinc-50
+                text_dim: color(161, 161, 170, 1.0),// zinc-400
                 accent_f: color(ar, ag, ab, 1.0),
-                accent_soft: color(ar, ag, ab, 0.18),
-                popup_bg: color(24, 24, 27, 1.0),  // zinc-900
-                danger: color(243, 18, 96, 1.0),
+                accent_soft: color(ar, ag, ab, 0.16),
+                popup_bg: color(20, 20, 23, 1.0),
+                danger: color(239, 68, 68, 1.0),    // red-500
             }
         } else {
             Theme {
@@ -70,17 +73,17 @@ impl Theme {
                 reduce_motion,
                 bg: color(255, 255, 255, 1.0),
                 bg_top: color(255, 255, 255, 1.0),
-                sidebar_bg: color(250, 250, 250, 1.0),
-                input_bg: color(24, 24, 27, 0.05),
-                hover: color(24, 24, 27, 0.055),
-                active: color(24, 24, 27, 0.10),
-                border: color(24, 24, 27, 0.09),
-                text: color(17, 24, 28, 1.0),
-                text_dim: color(113, 113, 122, 1.0),
+                sidebar_bg: color(250, 250, 250, 1.0), // zinc-50
+                input_bg: color(24, 24, 27, 0.04),
+                hover: color(24, 24, 27, 0.05),
+                active: color(24, 24, 27, 0.09),
+                border: color(24, 24, 27, 0.10),
+                text: color(9, 9, 11, 1.0),
+                text_dim: color(113, 113, 122, 1.0),   // zinc-500
                 accent_f: color(ar, ag, ab, 1.0),
-                accent_soft: color(ar, ag, ab, 0.14),
+                accent_soft: color(ar, ag, ab, 0.12),
                 popup_bg: color(255, 255, 255, 1.0),
-                danger: color(241, 70, 104, 1.0),
+                danger: color(220, 38, 38, 1.0),
             }
         }
     }

@@ -8,18 +8,20 @@
 .toolbar{display:flex;align-items:center;gap:12px;margin:0 0 14px;flex-wrap:wrap}
 .toolbar .search-field{flex:1;min-width:240px}
 .ranges{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
-.day{display:flex;align-items:center;gap:10px;margin:26px 0 8px;padding:0 2px}
-.day span{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1.3px;color:rgb(var(--fg-dim));white-space:nowrap}
-.day .n{font-size:11px;color:rgb(var(--fg-dim));opacity:.7}
-.count{font-size:12px;color:rgb(var(--fg-dim));font-variant-numeric:tabular-nums}
-.item.sel{background:rgba(var(--accent),.14);border-color:rgba(var(--accent),.4)}
-.item .tick{width:18px;height:18px;padding:0;border-radius:6px;flex:none;border:1.5px solid rgba(var(--line),.3);
-  background:transparent;cursor:pointer;
-  display:grid;place-items:center;font-size:11px;color:#fff;transition:background .2s var(--ease),border-color .2s}
-.item.sel .tick{background:rgb(var(--accent));border-color:transparent}
+.day{display:flex;align-items:center;gap:10px;margin:28px 0 6px}
+.day span{font-size:13px;font-weight:600;color:rgb(var(--fg));white-space:nowrap}
+.day .n{font-size:12px;font-weight:400;color:rgb(var(--fg-dim))}
+.count{font-size:13px;color:rgb(var(--fg-dim));font-variant-numeric:tabular-nums}
+.item.sel{background:rgb(var(--muted))}
+/* Kästchen im shadcn-Zuschnitt: 16px, kleiner Radius, gefüllt wenn gesetzt. */
+.item .tick{width:16px;height:16px;padding:0;height:16px;border-radius:var(--r-sm);flex:none;
+  border:1px solid rgb(var(--fg-dim));background:transparent;cursor:pointer;
+  display:grid;place-items:center;font-size:10px;color:rgb(var(--accent-fg));
+  transition:background .15s var(--ease),border-color .15s var(--ease)}
+.item.sel .tick{background:rgb(var(--accent));border-color:rgb(var(--accent))}
 .selbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:10px 14px;margin-bottom:10px;
-  border-radius:var(--r-md);background:rgba(var(--accent),.14);border:1px solid rgba(var(--accent),.3);
-  backdrop-filter:blur(12px)}
+  border-radius:var(--r-lg);background:rgb(var(--card));border:1px solid rgb(var(--line));
+  box-shadow:var(--shadow-md)}
 .selbar b{font-variant-numeric:tabular-nums}
 .more{display:block;margin:24px auto 0}
 </style>
@@ -192,6 +194,7 @@ window.chrome?.webview?.addEventListener('message', ev => {
   document.body.classList.toggle('dark', !!m.theme.dark);
   document.body.classList.toggle('reduce', !!m.theme.reduce);
   document.documentElement.style.setProperty('--accent', m.theme.accent);
+  document.documentElement.style.setProperty('--accent-fg', (a => {const [r,g,b]=String(a).split(',').map(Number); return (r*.299+g*.587+b*.114) > 150 ? '9,9,11' : '255,255,255';})(m.theme.accent));
   const d = m.data || {};
   ITEMS = d.items || [];
   $('#count').textContent = `${num(ITEMS.length)} von ${num(d.total)} Einträgen`;

@@ -93,5 +93,67 @@
     try {
       window.open.toString = () => 'function open() { [native code] }';
     } catch (e) {}
+
+    // ------------------------------------------------------------- Overlays
+    // Bildschirmfüllende Werbeschichten, die ungefragt aufpoppen: typisch auf
+    // Streaming-Seiten, oft mit gesperrtem Scrollen dahinter. Entfernt werden
+    // nur Schichten, die einen fremden Rahmen einbetten und ohne Zutun kamen –
+    // Zahlungs- und Anmeldedialoge bleiben unangetastet.
+    if (window.self === window.top) {
+      const KEEP = [
+        'stripe.com', 'paypal.com', 'paypalobjects.com', 'klarna.com', 'adyen.com',
+        'google.com', 'gstatic.com', 'accounts.google.com', 'hcaptcha.com',
+        'recaptcha.net', 'challenges.cloudflare.com', 'apple.com', 'microsoft.com',
+        'live.com', 'auth0.com', 'okta.com', 'amazon.com', 'sofort.com',
+      ];
+      let lastGesture = 0;
+      const gesture = () => { lastGesture = Date.now(); };
+      addEventListener('pointerdown', gesture, true);
+      addEventListener('keydown', gesture, true);
+
+      const sameSite = h => {
+        try {
+          const a = h.split('.').slice(-2).join('.');
+          const b = location.hostname.split('.').slice(-2).join('.');
+          return a === b;
+        } catch (e) { return true; }
+      };
+      const foreignFrame = el => {
+        for (const f of el.querySelectorAll('iframe')) {
+          let h = '';
+          try { h = new URL(f.src, location.href).hostname; } catch (e) { continue; }
+          if (!h || sameSite(h)) continue;
+          if (KEEP.some(k => h === k || h.endsWith('.' + k))) continue;
+          return true;
+        }
+        return false;
+      };
+      const covers = el => {
+        const r = el.getBoundingClientRect();
+        return r.width >= innerWidth * 0.6 && r.height >= innerHeight * 0.6;
+      };
+
+      const sweep = () => {
+        // Kurz nach einem echten Klick darf eine Schicht erscheinen.
+        if (Date.now() - lastGesture < 900) return;
+        for (const el of document.body ? document.body.children : []) {
+          if (!(el instanceof HTMLElement) || el.dataset.auraChecked) continue;
+          const cs = getComputedStyle(el);
+          if (cs.position !== 'fixed' && cs.position !== 'absolute') continue;
+          if ((parseInt(cs.zIndex, 10) || 0) < 500) continue;
+          if (!covers(el) || !foreignFrame(el)) { el.dataset.auraChecked = '1'; continue; }
+          el.remove();
+          AURA.blocked++;
+          // Gesperrtes Scrollen wieder freigeben.
+          for (const t of [document.documentElement, document.body]) {
+            t.style.setProperty('overflow', 'auto', 'important');
+            t.style.setProperty('position', 'static', 'important');
+          }
+        }
+      };
+      const stop = setInterval(sweep, 700);
+      setTimeout(() => clearInterval(stop), 25000);
+      addEventListener('DOMContentLoaded', sweep);
+    }
   } catch (e) {}
 })();

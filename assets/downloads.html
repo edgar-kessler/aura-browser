@@ -6,17 +6,17 @@
 <link rel="stylesheet" href="/aura.css">
 <style>
 .dl{display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:var(--r-lg);
-  background:rgba(var(--card),var(--card-a));border:1px solid rgba(var(--line),var(--line-a));margin-bottom:10px;
-  transition:transform .25s var(--ease),border-color .25s var(--ease)}
-.dl:hover{transform:translateY(-2px);border-color:rgba(var(--accent),.35)}
-.dl .ic{width:40px;height:40px;border-radius:var(--r-sm);background:rgba(var(--accent),.14);display:grid;place-items:center;flex:none}
-.dl .ic svg{width:19px;height:19px;stroke:rgb(var(--accent));fill:none;stroke-width:2}
+  background:rgb(var(--card));border:1px solid rgb(var(--line));margin-bottom:8px;
+  transition:background .15s var(--ease)}
+.dl:hover{background:rgb(var(--muted))}
+.dl .ic{width:36px;height:36px;border-radius:var(--r-md);background:rgb(var(--muted));display:grid;place-items:center;flex:none}
+.dl .ic svg{width:18px;height:18px;stroke:rgb(var(--fg-dim));fill:none;stroke-width:2}
 .dl .t{flex:1;min-width:0}
 .dl .t b{display:block;font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dl .t small{display:block;color:rgb(var(--fg-dim));font-size:12px;margin-top:2px}
+.dl .t small{display:block;color:rgb(var(--fg-dim));font-size:13px;margin-top:2px}
 .dl .t .bar{margin-top:8px}
 .dl .acts{display:flex;gap:8px;flex:none}
-.dl .acts button{padding:7px 13px;font-size:12px}
+.dl .acts button{height:32px;padding:0 12px;font-size:13px}
 </style>
 </head>
 <body>
@@ -45,6 +45,7 @@ window.chrome?.webview?.addEventListener('message', ev => {
   document.body.classList.toggle('dark', !!m.theme.dark);
   document.body.classList.toggle('reduce', !!m.theme.reduce);
   document.documentElement.style.setProperty('--accent', m.theme.accent);
+  document.documentElement.style.setProperty('--accent-fg', (a => {const [r,g,b]=String(a).split(',').map(Number); return (r*.299+g*.587+b*.114) > 150 ? '9,9,11' : '255,255,255';})(m.theme.accent));
 
   const list = $('#list');
   list.innerHTML = '';

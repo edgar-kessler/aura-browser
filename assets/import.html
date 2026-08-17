@@ -6,8 +6,8 @@
 <link rel="stylesheet" href="/aura.css">
 <style>
 .page{max-width:660px}
-.result{white-space:pre-wrap;font-size:13px;line-height:1.7;padding:16px 18px;border-radius:var(--r-lg);
-  background:rgba(var(--accent),.09);border:1px solid rgba(var(--accent),.22);margin-top:20px;display:none}
+.result{white-space:pre-wrap;font-size:13px;line-height:1.7;padding:16px;border-radius:var(--r-lg);
+  background:rgb(var(--card));border:1px solid rgb(var(--line));margin-top:20px;display:none}
 .path{font-size:12px;color:rgb(var(--fg-dim));margin-top:6px;word-break:break-all}
 .actions{display:flex;gap:10px;align-items:center;margin-top:20px}
 </style>
@@ -76,6 +76,7 @@ window.chrome?.webview?.addEventListener('message', ev => {
     document.body.classList.toggle('dark', !!m.theme.dark);
     document.body.classList.toggle('reduce', !!m.theme.reduce);
     document.documentElement.style.setProperty('--accent', m.theme.accent);
+    document.documentElement.style.setProperty('--accent-fg', (a => {const [r,g,b]=String(a).split(',').map(Number); return (r*.299+g*.587+b*.114) > 150 ? '9,9,11' : '255,255,255';})(m.theme.accent));
     const profiles = (m.data && m.data.profiles) || [];
     const sel = $('#profile');
     sel.innerHTML = '';

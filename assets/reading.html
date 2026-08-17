@@ -7,11 +7,11 @@
 <style>
 .tabs{display:flex;gap:8px;margin-bottom:20px}
 .item.done .t b{text-decoration:line-through;opacity:.55}
-.item .mark{flex:none;width:26px;height:26px;padding:0;border-radius:var(--r-sm);border:1px solid rgba(var(--line),.22);
+.item .mark{flex:none;width:28px;height:28px;padding:0;border-radius:var(--r-sm);border:1px solid rgb(var(--line));
   background:transparent;color:rgb(var(--fg-dim));font-size:12px;line-height:1;cursor:pointer;display:grid;place-items:center}
-.item .mark:hover{border-color:rgba(var(--accent),.6);color:rgb(var(--accent));transform:none}
-.item.done .mark{background:rgba(var(--success),.16);border-color:transparent;color:rgb(var(--success))}
-.age{font-size:11px;color:rgb(var(--fg-dim));font-variant-numeric:tabular-nums}
+.item .mark:hover{background:rgb(var(--muted));color:rgb(var(--fg))}
+.item.done .mark{background:rgba(var(--success),.12);border-color:rgba(var(--success),.25);color:rgb(var(--success))}
+.age{font-size:12px;color:rgb(var(--fg-dim));font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -94,6 +94,7 @@ window.chrome?.webview?.addEventListener('message', ev => {
   document.body.classList.toggle('dark', !!m.theme.dark);
   document.body.classList.toggle('reduce', !!m.theme.reduce);
   document.documentElement.style.setProperty('--accent', m.theme.accent);
+  document.documentElement.style.setProperty('--accent-fg', (a => {const [r,g,b]=String(a).split(',').map(Number); return (r*.299+g*.587+b*.114) > 150 ? '9,9,11' : '255,255,255';})(m.theme.accent));
   ITEMS = (m.data || {}).items || [];
   render();
 });

@@ -342,6 +342,14 @@ pub fn attach_events(
         if let Some(wv) = wv {
             let url = get_str(|p| unsafe { wv.Source(p) });
             let host = crate::adblock::host_of_url(&url).to_string();
+            // Seiten, die schon einmal mit Fenstern um sich geworfen haben,
+            // bekommen die strenge Regel: nur echte Links dürfen noch öffnen.
+            if crate::adblock::is_popup_abuser(&host) {
+                let w = wide("window.__auraStrictPopups=true;");
+                unsafe {
+                    let _ = wv.ExecuteScript(PCWSTR(w.as_ptr()), None);
+                }
+            }
             let css = crate::adblock::cosmetic_css(&host);
             if !css.is_empty() {
                 let lit = serde_json::to_string(&css).unwrap_or_else(|_| "\"\"".into());

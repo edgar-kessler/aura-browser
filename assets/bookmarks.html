@@ -7,11 +7,12 @@
 <style>
 .toolbar{display:flex;gap:10px;margin:0 0 22px}
 .toolbar .search-field{flex:1}
-.folder{display:flex;align-items:center;gap:10px;margin:26px 0 8px;padding:0 2px}
+.folder{display:flex;align-items:center;gap:9px;margin:28px 0 6px}
 .folder svg{width:15px;height:15px;stroke:rgb(var(--fg-dim));fill:none;stroke-width:1.8}
-.folder span{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1.3px;color:rgb(var(--fg-dim))}
-.folder .x{border:none;background:none;color:rgb(var(--fg-dim));cursor:pointer;font-size:13px;opacity:.6;padding:2px 6px;border-radius:8px}
-.folder .x:hover{opacity:1;color:rgb(var(--danger));background:rgba(var(--danger),.12);transform:none}
+.folder span{font-size:13px;font-weight:600;color:rgb(var(--fg))}
+.folder .x{border:none;background:none;color:rgb(var(--fg-dim));cursor:pointer;font-size:13px;opacity:.6;
+  height:24px;padding:0 6px;border-radius:var(--r-sm)}
+.folder .x:hover{opacity:1;color:rgb(var(--danger));background:rgba(var(--danger),.12)}
 </style>
 </head>
 <body>
@@ -96,6 +97,7 @@ window.chrome?.webview?.addEventListener('message', ev => {
   document.body.classList.toggle('dark', !!m.theme.dark);
   document.body.classList.toggle('reduce', !!m.theme.reduce);
   document.documentElement.style.setProperty('--accent', m.theme.accent);
+  document.documentElement.style.setProperty('--accent-fg', (a => {const [r,g,b]=String(a).split(',').map(Number); return (r*.299+g*.587+b*.114) > 150 ? '9,9,11' : '255,255,255';})(m.theme.accent));
   ITEMS = m.data.items || [];
   render();
 });

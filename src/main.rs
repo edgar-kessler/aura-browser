@@ -3,6 +3,7 @@
 
 mod adblock;
 mod app;
+mod devtools;
 mod gfx;
 mod omnibox;
 mod pages;

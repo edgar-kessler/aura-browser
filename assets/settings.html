@@ -5,23 +5,23 @@
 <title>Einstellungen – Aura</title>
 <link rel="stylesheet" href="/aura.css">
 <style>
-.dots{display:flex;gap:10px}
-.dot{width:28px;height:28px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:transform .2s var(--ease),border-color .2s}
-.dot:hover{transform:scale(1.1)}
-.dot.sel{border-color:transparent;transform:scale(1.12);box-shadow:0 0 0 2px rgb(var(--bg)),0 0 0 4px rgb(var(--accent))}
+.dots{display:flex;gap:8px}
+.dot{width:24px;height:24px;border-radius:var(--r-md);cursor:pointer;border:1px solid rgba(0,0,0,.1);
+  transition:box-shadow .15s var(--ease)}
+.dot.sel{box-shadow:0 0 0 2px rgb(var(--bg)),0 0 0 4px rgb(var(--fg))}
 table.keys{width:100%;border-collapse:collapse;font-size:13px}
-table.keys td{padding:8px 4px;border-bottom:1px solid rgba(var(--line),.08)}
+table.keys td{padding:9px 2px;border-bottom:1px solid rgb(var(--line))}
 table.keys tr:last-child td{border-bottom:none}
 table.keys td:last-child{text-align:right;color:rgb(var(--fg-dim))}
-.shield-hero{display:flex;align-items:center;gap:18px;padding:20px;border-radius:var(--r-lg);margin-bottom:12px;
-  background:linear-gradient(120deg,rgba(var(--accent),.16),rgba(var(--accent),.04));
-  border:1px solid rgba(var(--accent),.24)}
-.shield-hero svg{width:34px;height:34px;flex:none;stroke:rgb(var(--accent));fill:none;stroke-width:1.8}
-.shield-hero .big{font-size:26px;font-weight:600;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
-.shield-hero .cap{font-size:12px;color:rgb(var(--fg-dim))}
-.chipline{display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 2px}
-.pill button{padding:0;border:none;background:none;color:rgb(var(--fg-dim));font-size:14px;line-height:1;cursor:pointer}
-.pill button:hover{color:rgb(var(--accent));transform:none}
+/* Kennzahl-Karte: gleiche Fläche wie alle Karten, die Zahl trägt sie. */
+.shield-hero{display:flex;align-items:center;gap:16px;padding:20px;border-radius:var(--r-lg);margin-bottom:8px;
+  background:rgb(var(--card));border:1px solid rgb(var(--line))}
+.shield-hero svg{width:28px;height:28px;flex:none;stroke:rgb(var(--fg-dim));fill:none;stroke-width:1.8}
+.shield-hero .big{font-size:24px;font-weight:600;letter-spacing:-.5px;font-variant-numeric:tabular-nums}
+.shield-hero .cap{font-size:13px;color:rgb(var(--fg-dim))}
+.chipline{display:flex;flex-wrap:wrap;gap:6px;padding:4px 0 2px}
+.pill button{padding:0;height:auto;border:none;background:none;color:rgb(var(--fg-dim));font-size:14px;line-height:1;cursor:pointer}
+.pill button:hover{color:rgb(var(--fg));background:none}
 </style>
 </head>
 <body>
@@ -243,6 +243,7 @@ $('#accent_custom').addEventListener('input', e => {
   if (rgb) {
     $('#accent_hex').value = e.target.value;
     document.documentElement.style.setProperty('--accent', rgb);
+    document.documentElement.style.setProperty('--accent-fg', (a => {const [r,g,b]=String(a).split(',').map(Number); return (r*.299+g*.587+b*.114) > 150 ? '9,9,11' : '255,255,255';})(rgb));
     post({cmd: 'save_setting', key: 'accent', value: rgb});
   }
 });
@@ -267,6 +268,7 @@ window.chrome?.webview?.addEventListener('message', ev => {
   document.body.classList.toggle('dark', !!t.dark);
   document.body.classList.toggle('reduce', !!t.reduce);
   document.documentElement.style.setProperty('--accent', t.accent);
+  document.documentElement.style.setProperty('--accent-fg', (a => {const [r,g,b]=String(a).split(',').map(Number); return (r*.299+g*.587+b*.114) > 150 ? '9,9,11' : '255,255,255';})(t.accent));
   $('#theme').value = d.theme;
   $('#search_engine').value = d.search_engine;
   $('#new_tab_page').value = d.new_tab_page || 'start';

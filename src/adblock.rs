@@ -398,6 +398,9 @@ pub struct Engine {
     allowlist: HashSet<String>,
     /// Sites running in the hardened sandbox (no third-party anything).
     strict: HashSet<String>,
+    /// Seiten, die mit Fenstern um sich werfen. Für sie gilt automatisch die
+    /// strenge Regel: nur echte Links dürfen noch Fenster öffnen.
+    popup_abusers: HashSet<String>,
     tab_host: HashMap<u32, String>,
     tab_blocked: HashMap<u32, u32>,
     pub total: u64,
@@ -719,11 +722,13 @@ pub fn load(base: &str, extra: &[(String, String)], enabled: bool) {
     with_engine(|e| {
         let keep_allow = std::mem::take(&mut e.allowlist);
         let keep_strict = std::mem::take(&mut e.strict);
+        let keep_abusers = std::mem::take(&mut e.popup_abusers);
         let keep_total = e.total;
         let keep_hosts = std::mem::take(&mut e.tab_host);
         *e = Engine { enabled, ..Default::default() };
         e.allowlist = keep_allow;
         e.strict = keep_strict;
+        e.popup_abusers = keep_abusers;
         e.total = keep_total;
         e.tab_host = keep_hosts;
 
@@ -800,6 +805,7 @@ pub fn install_pending() -> bool {
         fresh.enabled = e.enabled;
         fresh.allowlist = std::mem::take(&mut e.allowlist);
         fresh.strict = std::mem::take(&mut e.strict);
+        fresh.popup_abusers = std::mem::take(&mut e.popup_abusers);
         fresh.tab_host = std::mem::take(&mut e.tab_host);
         fresh.tab_blocked = std::mem::take(&mut e.tab_blocked);
         fresh.total = e.total;
@@ -937,6 +943,48 @@ pub fn toggle_strict(host: &str) -> bool {
             true
         }
     })
+}
+
+// ---------------------------------------------------------------- Popup-Flut
+/// Merkt sich eine Seite, die zu viele Fenster geöffnet hat.
+pub fn note_popup_abuse(host: &str) -> bool {
+    let site = base_domain(&host.to_ascii_lowercase()).to_string();
+    if site.is_empty() {
+        return false;
+    }
+    with_engine(|e| e.popup_abusers.insert(site))
+}
+
+pub fn is_popup_abuser(host: &str) -> bool {
+    let h = host.to_ascii_lowercase();
+    with_engine(|e| e.popup_abusers.iter().any(|d| host_matches(&h, d)))
+}
+
+pub fn popup_abusers() -> Vec<String> {
+    with_engine(|e| {
+        let mut v: Vec<String> = e.popup_abusers.iter().cloned().collect();
+        v.sort();
+        v
+    })
+}
+
+pub fn set_popup_abusers(hosts: &[String]) {
+    with_engine(|e| e.popup_abusers = hosts.iter().map(|h| h.to_ascii_lowercase()).collect());
+}
+
+pub fn forget_popup_abuser(host: &str) {
+    let site = base_domain(&host.to_ascii_lowercase()).to_string();
+    with_engine(|e| {
+        e.popup_abusers.remove(&site);
+    });
+}
+
+/// Zählt eine blockierte Anfrage, ohne dass eine Regel gegriffen hat.
+pub fn count_blocked(tab: u32) {
+    with_engine(|e| {
+        e.total += 1;
+        *e.tab_blocked.entry(tab).or_insert(0) += 1;
+    });
 }
 
 /// True when the tab's current site runs hardened.
