@@ -1,37 +1,63 @@
-/* Aura Designsystem — an shadcn/ui angelehnt.
-   Geteilt von allen internen Seiten (aura://start, history, bookmarks, …).
+/* Aura Designsystem.
+   Geteilt von allen internen Seiten (aura://start, history, bookmarks, …) und
+   deckungsgleich mit den Farben der nativen Oberfläche in src/theme.rs.
 
-   Grundsatz: ruhige neutrale Flächen, dünne sichtbare Kanten, kleine Radien.
-   Die Akzentfarbe trägt Bedeutung — sie markiert das Aktive, nicht die Deko.
-   Kein Leuchten, keine Farbverläufe, keine hüpfenden Buttons. */
+   Grundlage ist eine zwölfstufige Neutralskala mit festen Rollen (Radix
+   Colors, dasselbe Modell wie shadcn und Geist):
+
+     1  Fläche der Anwendung        7  Rand
+     2  abgesetzte Fläche           8  starker Rand, Fokusring
+     3  Bedienelement               9  Vollton (Akzent)
+     4  Bedienelement berührt      10  Vollton berührt
+     5  Bedienelement gewählt      11  Text, leise
+     6  Trennlinie                 12  Text, deutlich
+
+   Dazu die Haltung von Stripe: eine kräftige Farbe, die sich ihren Auftritt
+   verdient, Tiefe aus Flächenabstufung statt aus Schatten, Buchstabenabstand,
+   der mit der Schriftgröße enger wird, und Abstände im Vierer-Raster. */
 :root{
+  /* Radix slate, hell */
+  --s1:252,252,253; --s2:249,249,251; --s3:240,240,243; --s4:232,232,236;
+  --s5:224,225,230; --s6:217,217,224; --s7:205,206,214; --s8:185,187,198;
+  --s9:139,141,152; --s10:128,131,141; --s11:96,100,108; --s12:28,32,36;
+
   --accent:110,91,208;
   --accent-fg:255,255,255;
 
-  --fg:9,9,11;              /* zinc-950 */
-  --fg-dim:113,113,122;     /* zinc-500 */
-  --bg:255,255,255;
-  --card:255,255,255;       /* deckend, nicht durchscheinend */
-  --muted:244,244,245;      /* zinc-100 */
-  --line:228,228,231;       /* zinc-200 */
-  --danger:220,38,38;       /* red-600  */
-  --success:22,163,74;      /* green-600 */
+  --bg:var(--s1);
+  --card:var(--s2);
+  --muted:var(--s3);
+  --line:var(--s6);
+  --line-strong:var(--s7);
+  --fg:var(--s12);
+  --fg-dim:var(--s11);
+  --danger:206,44,49;
+  --success:24,131,79;
 
-  /* shadcn: --radius 0.5rem, davon abgeleitet sm/md/lg */
+  /* Vierer-Raster */
+  --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px; --sp-6:32px; --sp-7:48px;
   --r-sm:4px; --r-md:6px; --r-lg:8px; --r-xl:12px; --r-full:999px;
   --ease:cubic-bezier(.4,0,.2,1);
   --shadow:0 1px 2px 0 rgba(0,0,0,.05);
   --shadow-md:0 4px 6px -1px rgba(0,0,0,.07),0 2px 4px -2px rgba(0,0,0,.07);
 }
 body.dark{
-  --fg:250,250,250;         /* zinc-50 */
-  --fg-dim:161,161,170;     /* zinc-400 */
-  --bg:9,9,11;              /* zinc-950 */
-  --card:24,24,27;          /* zinc-900 */
-  --muted:39,39,42;         /* zinc-800 */
-  --line:39,39,42;          /* zinc-800 */
-  --danger:239,68,68;
-  --success:34,197,94;
+  /* Radix slate dark */
+  --s1:17,17,19; --s2:24,25,27; --s3:33,34,37; --s4:39,42,45;
+  --s5:46,49,53; --s6:54,58,63; --s7:67,72,78; --s8:90,97,105;
+  --s9:105,110,119; --s10:119,123,132; --s11:176,180,186; --s12:237,238,240;
+  /* Die Rollen müssen hier erneut stehen: ein var() in einem eigenen
+     Merkmal wird schon auf dem Element aufgelöst, das es erklärt — sonst
+     behielte die Seite die hellen Werte von :root. */
+  --bg:var(--s1);
+  --card:var(--s2);
+  --muted:var(--s3);
+  --line:var(--s6);
+  --line-strong:var(--s7);
+  --fg:var(--s12);
+  --fg-dim:var(--s11);
+  --danger:255,99,105;
+  --success:48,164,108;
   --shadow:0 1px 2px 0 rgba(0,0,0,.4);
   --shadow-md:0 4px 6px -1px rgba(0,0,0,.5),0 2px 4px -2px rgba(0,0,0,.5);
 }
@@ -55,14 +81,17 @@ body{
 ::-webkit-scrollbar-track{background:transparent}
 :focus-visible{outline:2px solid rgb(var(--accent));outline-offset:2px}
 
-/* ---------- Layout ---------- */
-.page{max-width:768px;margin:0 auto;padding:56px 24px 96px}
-.head{display:flex;align-items:center;gap:12px;margin-bottom:6px}
-h1{font-size:24px;font-weight:600;letter-spacing:-.4px;line-height:1.2}
-.lead{color:rgb(var(--fg-dim));margin-bottom:32px;font-size:14px}
+/* ---------- Layout ----------
+   Schriftgrößen mit enger werdendem Buchstabenabstand: je größer der Grad,
+   desto stärker zusammengezogen. Das ist der Kniff, der Überschriften
+   gesetzt statt nur vergrößert aussehen lässt. */
+.page{max-width:768px;margin:0 auto;padding:var(--sp-7) var(--sp-5) 96px}
+.head{display:flex;align-items:center;gap:var(--sp-3);margin-bottom:var(--sp-1)}
+h1{font-size:24px;font-weight:600;letter-spacing:-.02em;line-height:1.25}
+.lead{color:rgb(var(--fg-dim));margin-bottom:var(--sp-6);font-size:14px}
 h2,.h2{
-  font-size:14px;font-weight:600;letter-spacing:-.1px;text-transform:none;
-  color:rgb(var(--fg));margin:36px 0 12px;padding:0;
+  font-size:14px;font-weight:600;letter-spacing:-.006em;text-transform:none;
+  color:rgb(var(--fg));margin:var(--sp-6) 0 var(--sp-3);padding:0;
 }
 .spacer{flex:1}
 .rule{flex:1;height:1px;background:rgb(var(--line))}

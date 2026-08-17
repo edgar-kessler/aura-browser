@@ -367,10 +367,13 @@ impl App {
         let gfx = Gfx::new()?;
         let hinst = HINSTANCE(unsafe { GetModuleHandleW(None)? }.0);
 
-        let fmt_ui = gfx.text_format(13.5, DWRITE_FONT_WEIGHT_NORMAL)?;
+        // Schriftgrade der Oberfläche. Eine Stufe unter den Seiten (14) und
+        // ohne Sprünge: 13 trägt alles, 11.5 die Nebensachen, 14.5 den
+        // Namenszug. Mehr Grade braucht eine Leiste nicht.
+        let fmt_ui = gfx.text_format(13.0, DWRITE_FONT_WEIGHT_NORMAL)?;
         let fmt_small = gfx.text_format(11.5, DWRITE_FONT_WEIGHT_NORMAL)?;
-        let fmt_semibold = gfx.text_format(13.5, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
-        let fmt_title = gfx.text_format(15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let fmt_semibold = gfx.text_format(13.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
+        let fmt_title = gfx.text_format(14.5, DWRITE_FONT_WEIGHT_SEMI_BOLD)?;
         let fmt_icon = icon_font(&gfx, 15.0)?;
         let fmt_icon_sm = icon_font(&gfx, 12.0)?;
 
@@ -1387,7 +1390,7 @@ impl App {
                 if let Ok(b) = brush(rt, theme.accent_f) {
                     rt.FillRoundedRectangle(&rounded(badge, 7.0), &b);
                 }
-                if let Ok(b) = brush(rt, color(255, 255, 255, 1.0)) {
+                if let Ok(b) = brush(rt, theme.on_accent) {
                     let t: Vec<u16> = label.encode_utf16().collect();
                     self.fmt_small.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).ok();
                     self.fmt_small.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
@@ -1423,28 +1426,30 @@ impl App {
 
     fn paint_omnibox(&mut self, rt: &ID2D1RenderTarget, theme: &Theme) {
         let r = self.layout.omnibox;
-        let pill = (r.bottom - r.top) / 2.0; // fully rounded pill
+        // Kein Kapselfeld mehr: ein Eingabefeld mit kleinem Radius, wie in
+        // ernsthaften Oberflächen üblich. Die Kapsel ließ die Leiste
+        // spielzeughaft wirken.
+        let rad = R_MD;
         let ht = self.hover_t(Hot::Omnibox);
         unsafe {
-            // pill background (lifts slightly on hover)
             if let Ok(b) = brush(rt, theme.input_bg) {
-                rt.FillRoundedRectangle(&rounded(r, pill), &b);
+                rt.FillRoundedRectangle(&rounded(r, rad), &b);
             }
             if ht > 0.0 && !self.editing {
                 if let Ok(b) = brush(rt, theme.hover_at(ht * 0.7)) {
-                    rt.FillRoundedRectangle(&rounded(r, pill), &b);
+                    rt.FillRoundedRectangle(&rounded(r, rad), &b);
                 }
             }
             if self.editing {
-                // focus ring
-                if let Ok(b) = brush(rt, theme.accent_soft) {
-                    rt.DrawRoundedRectangle(&rounded(inflate(r, 2.5), pill + 2.5), &b, 3.0, None);
+                // Fokusring: außen weich, innen die Linie in Akzentfarbe.
+                if let Ok(b) = brush(rt, theme.ring()) {
+                    rt.DrawRoundedRectangle(&rounded(inflate(r, 2.0), rad + 2.0), &b, 3.0, None);
                 }
                 if let Ok(b) = brush(rt, theme.accent_f) {
-                    rt.DrawRoundedRectangle(&rounded(r, pill), &b, 1.5, None);
+                    rt.DrawRoundedRectangle(&rounded(r, rad), &b, 1.0, None);
                 }
-            } else if let Ok(b) = brush(rt, theme.border) {
-                rt.DrawRoundedRectangle(&rounded(r, pill), &b, 1.0, None);
+            } else if let Ok(b) = brush(rt, theme.border_strong) {
+                rt.DrawRoundedRectangle(&rounded(r, rad), &b, 1.0, None);
             }
 
             // left glyph: lock / globe / search
@@ -1752,9 +1757,9 @@ impl App {
                         None,
                     );
                 } else {
-                    // Ersatz: kleines Quadrat mit dem Anfangsbuchstaben.
-                    let letter_bg = if tab.is_internal { theme.accent_soft } else { theme.hover };
-                    if let Ok(b) = brush(rt, letter_bg) {
+                    // Ersatz: kleines Quadrat mit dem Anfangsbuchstaben. Neutral —
+                    // die Akzentfarbe gehört der aktiven Zeile, nicht jedem Kachelchen.
+                    if let Ok(b) = brush(rt, theme.active) {
                         rt.FillRoundedRectangle(&rounded(icon_rect, 3.0), &b);
                     }
                     let ch = tab
@@ -1764,7 +1769,7 @@ impl App {
                         .unwrap_or('A')
                         .to_uppercase()
                         .to_string();
-                    if let Ok(b) = brush(rt, if tab.is_internal { theme.accent_f } else { theme.text_dim }) {
+                    if let Ok(b) = brush(rt, theme.text_dim) {
                         let t: Vec<u16> = ch.encode_utf16().collect();
                         self.fmt_small.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).ok();
                         self.fmt_small.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER).ok();
@@ -1850,16 +1855,20 @@ impl App {
 
             rt.PopAxisAlignedClip(); // end of the scrolled tab list
 
-            // Scrollbar hint: a slim thumb that only shows when the list overflows.
+            // Bildlaufmarke: nur sichtbar, wenn die Liste überläuft. Sie sitzt
+            // ein Stück von der Kante weg — direkt daneben verschmolz sie mit
+            // der Trennlinie zu einem dicken Strich.
             if self.tab_scroll_max > 0.5 {
                 let view = self.layout.tab_view;
                 let vh = view.bottom - view.top;
                 let frac = vh / (vh + self.tab_scroll_max);
                 let th = (vh * frac).max(28.0);
                 let ty = view.top + (vh - th) * (self.tab_scroll / self.tab_scroll_max);
-                if let Ok(b) = brush(rt, theme.border) {
+                let mut c = theme.text_dim;
+                c.a = 0.35;
+                if let Ok(b) = brush(rt, c) {
                     rt.FillRoundedRectangle(
-                        &rounded(rect_f(view.right - 4.0, ty, 3.0, th), 1.5),
+                        &rounded(rect_f(view.right - 7.0, ty, 3.0, th), 1.5),
                         &b,
                     );
                 }

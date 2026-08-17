@@ -80,7 +80,7 @@ fn tick() -> u64 {
     unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
 }
 
-const MENU_ROW: f32 = 30.0;
+const MENU_ROW: f32 = 32.0;
 const SUGG_ROW: f32 = 46.0;
 
 pub fn register_class(hinst: HINSTANCE) -> windows::core::Result<()> {
@@ -306,12 +306,14 @@ impl Popup {
             let rt: ID2D1RenderTarget = target.cast().unwrap();
             rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
 
-            // soft shadow (layered translucent rounded rects)
-            for i in 0..3 {
+            // Schlagschatten aus gestapelten durchscheinenden Rechtecken. Ein
+            // schwebendes Menü braucht ihn, damit es sich von der Seite löst —
+            // im Fenster selbst kommt Tiefe dagegen aus Flächenabstufung.
+            for i in 0..4 {
                 let pad = 1.0 + i as f32;
-                if let Ok(b) = brush(&rt, color(20, 16, 40, 0.05 - i as f32 * 0.012)) {
+                if let Ok(b) = brush(&rt, color(0, 0, 0, 0.07 - i as f32 * 0.015)) {
                     rt.FillRoundedRectangle(
-                        &rounded(rect_f(pad, pad + 1.0, w_dip - pad * 2.0, h_dip - pad * 2.0 - 1.0), R_LG),
+                        &rounded(rect_f(pad, pad + 1.5, w_dip - pad * 2.0, h_dip - pad * 2.0 - 1.5), R_LG),
                         &b,
                     );
                 }
